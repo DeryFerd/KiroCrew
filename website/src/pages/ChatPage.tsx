@@ -209,7 +209,7 @@ import { i18nT } from '../i18n/t'
 import { parseNudgeMessage, nudgeLabel } from './chat/NudgeCard'
 import { parseSubagentCompletionMessage } from './chat/subagentCompletion'
 import { headline as subagentHeadline } from './chat/SubagentCompletionCard'
-import { fmtDateFields } from '../i18n/format'
+import { fmtDateFields, fmtNumber } from '../i18n/format'
 import { fmtMessageTime, fmtMessageTimeFull } from './chat/messageTime'
 /**
  * Human-readable reason from a rejected thunk. `unwrap()` rejects with RTK's
@@ -403,7 +403,7 @@ function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number; tokens
         aria-expanded={expanded}
         aria-label={expanded ? i18nT('pages.chatPage.collapse_knowledge_context') : i18nT('pages.chatPage.expand_knowledge_context')}
       >
-        <BookOpen size={12} className="shrink-0" /> {i18nT('pages.chatPage.knowledge_item', { count: knowledge.items })} · {knowledge.tokens.toLocaleString()} {i18nT('pages.chatPage.tokens')}
+        <BookOpen size={12} className="shrink-0" /> {i18nT('pages.chatPage.knowledge_item', { count: knowledge.items })} · {fmtNumber(knowledge.tokens)} {i18nT('pages.chatPage.tokens')}
       </button>
       {expanded && knowledge.content && (
         <div className="mt-1 max-h-[300px] overflow-auto rounded border border-border bg-bg-elevated p-2 text-[11px]">

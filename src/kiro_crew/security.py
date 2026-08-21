@@ -4340,6 +4340,26 @@ _CREW_SECRET_LEAVES: list[str] = [
     "profiles",
     "admission_policy.json",
     "denied_commands.json",
+    # The cron store. It holds access-control state, not just scheduling data:
+    # ``session_key`` decides which session may manage a job through the MCP cron
+    # tools and where the job's output is delivered, ``approval_mode`` is a
+    # per-job auto-approval decision, and ``command``/``script`` decide what
+    # gets executed on the host on a schedule. While the store sat outside the
+    # protected leaves, an auto-approved shell could reassign ownership, flip a
+    # job to auto-approve, or rewrite what a scheduled job runs with an ordinary
+    # file edit — an open side door around the MCP tools' deliberate
+    # cannot-write-``session_key`` rule and the ``self-protection-cron-adopt``
+    # denied command, because those controls match command strings while the
+    # state lives in the file. The gateway's own writers open the store
+    # directly, not through this gate, so the cron service is unaffected; the
+    # cost is that a human hand-edit through an agent shell is refused, the
+    # same trade-off every other keystone leaf makes. The ``cron-history``
+    # sidecar directory (per-job records plus the index) sits on the same floor:
+    # it is a tamperable audit trail of those runs, and one directory rule
+    # covers the records, the index, and the lock/temp files — the same
+    # treatment ``webhooks`` and ``profiles`` already get.
+    "crons.json",
+    "cron-history",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

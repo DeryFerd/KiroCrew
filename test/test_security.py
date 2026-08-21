@@ -5885,3 +5885,63 @@ class TestDashboardLinkTokenAcrossHostForms:
 
         assert scan_exfiltration_urls(f"http://localhost:7778/?token={self._TOKEN}") == []
         assert scan_exfiltration_urls(f"http://127.0.0.1:7778/?token={self._TOKEN}") != []
+
+
+class TestCronStoreProtection:
+    """The cron store is a keystone leaf (#4812).
+
+    ``crons.json`` holds access-control state, not just scheduling data:
+    ``session_key`` decides which session may manage a job (and where its output
+    goes), ``approval_mode`` is a per-job auto-approval decision, and
+    ``command``/``script`` is scheduled host execution. The MCP cron tools
+    deliberately cannot write ``session_key`` and ``self-protection-cron-adopt``
+    blocks the CLI spelling of that write — but while the store sat outside the
+    protected leaves, an auto-approved shell could bypass both with an ordinary
+    file edit. It is on ``_CREW_SECRET_LEAVES`` with its ``cron-history``
+    sidecar directory (per-job records plus the index), read+write-blocked on
+    both the tool path and the shell forms. The gateway's own writers open the
+    store directly, not through this gate, so the cron service keeps working;
+    the cost is that a human hand-edit through an agent shell is refused, the
+    same trade-off every other keystone leaf makes.
+    """
+
+    def test_leaf_membership(self) -> None:
+        # Drift guard: a rename of the store or sidecar dir in cron.py /
+        # cron_history.py without a matching entry here would silently
+        # un-fence them.
+        from kiro_crew.security import _CREW_SECRET_LEAVES
+
+        assert "crons.json" in _CREW_SECRET_LEAVES
+        assert "cron-history" in _CREW_SECRET_LEAVES
+
+    @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
+    def test_store_and_history_sensitive_under_every_home_prefix(self, prefix: str) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        assert is_sensitive_path(f"~/{prefix}/crons.json") is True
+        assert is_sensitive_path(f"~/{prefix}/cron-history/_index.jsonl") is True
+        assert is_sensitive_path(f"~/{prefix}/cron-history/job123.jsonl") is True
+        # The write gate is a superset of the read gate; assert it directly so
+        # the file-edit tool path is pinned too.
+        assert is_sensitive_write_path(f"~/{prefix}/crons.json") is True
+        assert is_sensitive_write_path(f"~/{prefix}/cron-history/_index.jsonl") is True
+
+    def test_bash_write_and_read_both_blocked(self) -> None:
+        for cmd in (
+            "echo x > ~/.kiro/crew/crons.json",
+            "tee ~/.kiro/crew/crons.json",
+            "cp evil ~/.kiro/crew/crons.json",
+            'sed -i \'s/"approval_mode": ""/"approval_mode": "auto"/\' ~/.kiro/crew/crons.json',
+            "cat ~/.kiro/crew/crons.json",
+            "echo x > ~/.kiro/crew/cron-history/_index.jsonl",
+            "cat ~/.kirocrew/crons.json",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_sibling_cron_names_are_not_over_blocked(self) -> None:
+        from kiro_crew.security import is_sensitive_path, is_sensitive_write_path
+
+        # Shared-prefix names a shell might legitimately touch elsewhere.
+        assert is_sensitive_path("~/projects/crontab.txt") is False
+        assert is_sensitive_write_path("~/projects/crontab.txt") is False
+        assert is_sensitive_path("~/.kiro/crew/workspace/crons.json.bak") is False

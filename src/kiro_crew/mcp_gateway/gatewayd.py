@@ -75,7 +75,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     records_dir,
     resolve_overlay_dir,
 )
-from kiro_crew.mcp_gateway.secret_uri import resolve_secret_uris
+from kiro_crew.mcp_gateway.secret_uri import clear_resolved_secrets, resolve_secret_uris
 from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.mcp_gateway.stub import fallback_counts as stub_fallback_counts
@@ -2880,10 +2880,12 @@ async def _acquire_backend(
         # Resolve secret:// URIs in env values — ephemeral, in-memory only.
         # The sidecar on disk retains the raw URI template; resolution happens
         # at spawn time so values are always fresh from the vault.
-        spawn_env, _secret_keys = await asyncio.to_thread(
+        spawn_env, secret_keys = await asyncio.to_thread(
             resolve_secret_uris,
             spawn_env,
             Path(_config_dir()),
+            caller_identity="mcp-gateway",
+            source="mcp-gateway",
         )
         backend = await spawn_backend(
             pool_key=pool_key,
@@ -2906,11 +2908,13 @@ async def _acquire_backend(
         # Security note: resolved secrets exist ONLY in the local spawn_env
         # dict passed to the child via Popen(env=...).  They are NEVER written
         # to the parent's os.environ, so /proc/<gateway_pid>/environ cannot
-        # leak them — the /proc concern is architecturally moot.  The pop
-        # below is defense-in-depth: it removes the plaintext from the
-        # parent's Python heap once the child has inherited it at exec.
-        for _sk in _secret_keys:
-            spawn_env.pop(_sk, None)
+        # leak them — the /proc concern is architecturally moot. The
+        # clear_resolved_secrets call below is defense-in-depth: it removes
+        # the plaintext from the parent's Python heap once the child has
+        # inherited it at exec. Going through the named helper means a
+        # regression test can pin the contract (see
+        # test/test_secret_uri_cleanup.py).
+        clear_resolved_secrets(spawn_env, secret_keys)
         # Start the stdout pump immediately so replies to the first
         # forwarded message can route back. The task is owned by the
         # Backend and cancelled at shutdown().

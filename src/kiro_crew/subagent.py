@@ -151,6 +151,31 @@ def _safe_fire(coro: Awaitable[None]) -> None:
 
 
 _MAX_CONCURRENT = 3
+#: Bound on the spawn queue depth, applied only to non-batched ``spawn()``
+#: calls. The :meth:`SubagentManager.spawn` cap on :attr:`_running_count`
+#: prevents in-process resource exhaustion on the running side; this
+#: constant is the symmetric cap on the queue side. A sustained flood of
+#: non-batched :meth:`spawn` calls with the pool saturated would otherwise
+#: accumulate in :attr:`_queue` linearly with the spawn rate, while the
+#: drain is bounded by ``_MAX_CONCURRENT`` — the docstring's "Max
+#: concurrent limit prevents resource exhaustion" promise was half-kept
+#: until this constant landed.
+#:
+#: Batched calls (``batch_id`` set) skip the cap entirely. ``spawn_run
+#: tasks=[...]`` advertises "still pass ALL of them in one call — any
+#: beyond the cap are queued and drained automatically", and a wave's
+#: worst case is already bounded by ``batch_total`` (transport-clamped at
+#: 1000). Refusing a wave member mid-fan-out would strand the digest,
+#: because the same spawn discipline forbids the parent from retrying
+#: mid-wave. The cap fires only when no ``batch_id`` was supplied — the
+#: genuine flood shape (a tight ``spawn_run`` loop without a wave
+#: identity, or a retry storm from a transport that misses releases).
+#:
+#: The refusal mirrors the existing ``refused_memory_critical`` shape: a
+#: typed ``refused_queue_full`` SEL outcome, a ``done=True``
+#: :class:`SubagentInfo` with a retry-later error string, and no entry
+#: appended to ``_queue``.
+_MAX_QUEUED = 32
 
 #: Agent names a roster never suggests: the host default and the conductor are
 #: reached by OMITTING ``agent``, not by naming one. Shared with the spawn tools'
@@ -1544,6 +1569,7 @@ class SubagentManager:
         self._ctx_builder = ctx_builder
         self._on_done = on_done
         self._max_concurrent = max_concurrent
+        self._max_queued = _MAX_QUEUED
         self._default_turn_limit = default_turn_limit
         self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
         self._startup_deadline = startup_timeout if startup_timeout > 0 else _STARTUP_TIMEOUT_SECS
@@ -3512,6 +3538,54 @@ class SubagentManager:
             # the default 2s stagger that is EVERY member after the first, so a
             # 2-agent wave permanently rendered "1 agent running" while the
             # sidebar and Subagents panel correctly showed 2.
+            # Bound the queue itself before appending — but only for the flood
+            # case, not the wave case. ``spawn_run tasks=[...]`` advertises
+            # "still pass ALL of them in one call — any beyond the cap are
+            # queued and drained automatically", and the wave's worst case
+            # is already bounded by ``batch_total`` (transport-clamped at
+            # 1000). Refusing a wave member mid-fan-out would strand the
+            # digest, because the same spawn discipline forbids the parent
+            # from retrying mid-wave. So the cap fires only when no
+            # ``batch_id`` was supplied — the genuine flood shape (a single
+            # caller's tight ``spawn_run`` loop without a wave identity, or
+            # a retry storm from a transport that misses releases). Batched
+            # spawns (``batch_id`` set) skip the cap entirely: their ceiling
+            # is ``batch_total``.
+            if not batch_id and len(self._queue) >= self._max_queued:
+                logger.warning(
+                    "Subagent spawn refused: queue full (%d >= %d)",
+                    len(self._queue),
+                    self._max_queued,
+                )
+                try:
+                    sel().log_tool_invocation(
+                        session_key=parent_session_key or "",
+                        source="subagent",
+                        tool_name="spawn_run",
+                        outcome="refused_queue_full",
+                        metadata={
+                            "max_queued": self._max_queued,
+                            "queue_depth": len(self._queue),
+                            "task": _redacted_task[:120],
+                        },
+                    )
+                except Exception:
+                    logger.debug("SEL audit failed for queue-full rejection", exc_info=True)
+                info = SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=(
+                        "spawn queue is at capacity "
+                        f"({len(self._queue)} of {self._max_queued} entries) "
+                        "— retry when the running pool drains"
+                    ),
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+                return self._announce_rejection(info)
             self._queue.append(
                 {
                     "task": task,
@@ -3750,12 +3824,17 @@ class SubagentManager:
         queue-drained non-batch rejections too — ``_drain_queue`` announces
         those itself off the returned info, so announcing here as well would
         inject the completion twice.
+
+        The announce goes through the module-level fire-and-forget helper
+        ``_safe_fire`` rather than ``self._tasks`` so a sustained flood of
+        rejections cannot grow the per-manager map without bound. The
+        earlier ``self._tasks[f"reject-{info.id}"] = ...`` pattern left
+        every prefixed key in place forever — see the matched sibling
+        pop paths at ``agent_id`` (unprefixed), none at ``reject-``,
+        ``lost-``, or ``flush-``.
         """
-        if info.batch_id and self._on_done:
-            try:
-                self._tasks[f"reject-{info.id}"] = asyncio.ensure_future(self._safe_announce(info))
-            except RuntimeError:
-                pass  # no running loop (sync/test context)
+        if info.batch_id and self._on_done is not None:
+            _safe_fire(self._on_done(info))
         return info
 
     def _should_stagger_queue(self, now: float) -> tuple[bool, bool]:

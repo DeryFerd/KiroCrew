@@ -2005,7 +2005,16 @@ class TestAnnounceRejection:
         mgr = _manager(on_done=_on_done)
         info = _info(done=True, error="rejected", batch_id="w1")
         mgr._announce_rejection(info)
-        await asyncio.gather(*mgr._tasks.values())
+        # The batched on_done is scheduled through the module-level
+        # ``_safe_fire`` helper, which lives in ``_background_tasks`` —
+        # NOT in ``mgr._tasks``. Awaiting those tasks is the same proof
+        # the wave saw the announce; the per-manager map just no longer
+        # carries the prefix-key entries the helper used to insert.
+        from kiro_crew.subagent import _background_tasks
+
+        # Snapshot before the helper discards itself.
+        scheduled = list(_background_tasks)
+        await asyncio.gather(*scheduled, return_exceptions=True)
         assert announced == [info]
 
     @pytest.mark.asyncio

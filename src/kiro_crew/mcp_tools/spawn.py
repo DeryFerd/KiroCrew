@@ -120,7 +120,11 @@ def schemas() -> list[dict[str, Any]]:
         f" You can run up to {_max_sub} sub-agents concurrently; if a task has "
         "more independent parts than that, still pass ALL of them in one call — "
         "any beyond the cap are queued and drained automatically as slots free, "
-        "so you never need to split the work into multiple manual rounds."
+        "so you never need to split the work into multiple manual rounds. The "
+        "queue cap that bounds a non-wave flood (a tight loop without a wave "
+        "identity, or a retry storm) does NOT bound wave fan-out: every "
+        "member of a single spawn_run wave is queued regardless of depth, "
+        "because a refused mid-wave member would strand the digest."
         if _max_sub > 0
         else ""
     )
@@ -530,7 +534,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     inc_lessons = args.get("include_lessons", True) is not False
     inc_project = args.get("include_project", True) is not False
     if agents_list and len(agents_list) != len(task_list):
-        return f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
+        return (
+            f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
+        )
 
     agent_ids: list[str] = []
     agent_names: list[str] = []
@@ -725,8 +731,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             )
         else:
             spawn_lines.append(
-                f"Error: acceptance status is unknown for "
-                f"{len(transport_errors)} task(s):"
+                f"Error: acceptance status is unknown for " f"{len(transport_errors)} task(s):"
             )
         for e in transport_errors:
             spawn_lines.append(f"  - {e}")
@@ -844,9 +849,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
                 progress = f" ({', '.join(parts)})"
             _withheld = a.get("context_withheld") or []
             scope = f"  ctx-withheld: {','.join(_withheld)}" if _withheld else ""
-            lines.append(
-                f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}"
-            )
+            lines.append(f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}")
     # Always append available agents (fresh read from disk). Same grammar filter as
     # the two rosters above: this output is a tool RESULT, so it lands in the same
     # model context, and a spec's ``name`` field arrives unvalidated.

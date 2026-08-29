@@ -213,12 +213,12 @@ def _provider_effectively_alive(provider: Any) -> bool:
     the won-race re-validate). The in-lock live fast path keeps its own inline
     copy of this decision because it also evicts the stale entry and emits
     path-specific logging; that copy must stay in sync with this helper.
+
+    Read straight off the declared ABC: ``LLMProvider.is_process_alive``
+    defaults to ``is_alive()``, so every provider answers the call and no
+    capability probe is needed (harness-parity H14).
     """
-    alive = (
-        provider.is_process_alive()
-        if hasattr(provider, "is_process_alive")
-        else provider.is_alive()
-    )
+    alive = provider.is_process_alive()
     if (
         not alive
         and ClaudeCodeProvider is not None
@@ -2266,7 +2266,7 @@ class SessionManager:
             still_alive = platform_compat.pid_exists(pid)
         else:
             try:
-                still_alive = hasattr(provider, "is_process_alive") and provider.is_process_alive()
+                still_alive = provider.is_process_alive()
             except Exception:
                 still_alive = False
         if still_alive:
@@ -2344,9 +2344,7 @@ class SessionManager:
                 # healthy provider is routine (INFO); one that also died before
                 # aging out is a genuine anomaly and keeps WARNING.
                 try:
-                    ttl_alive = (
-                        hasattr(provider, "is_process_alive") and provider.is_process_alive()
-                    )
+                    ttl_alive = provider.is_process_alive()
                 except Exception:
                     ttl_alive = False
                 ttl_log = logger.info if ttl_alive else logger.warning
@@ -2363,9 +2361,9 @@ class SessionManager:
             # which has a 600s stale-activity threshold.  Pool processes are
             # expected to be idle (no I/O after init) so the stale check would
             # falsely discard healthy processes after ~10 min.
-            alive = hasattr(provider, "is_process_alive") and provider.is_process_alive()
+            alive = provider.is_process_alive()
             if not alive:
-                rc = provider.exit_code if hasattr(provider, "exit_code") else None
+                rc = provider.exit_code
                 logger.warning(
                     "Warm pool: claimed provider is dead (returncode=%s), discarding", rc
                 )
@@ -2497,9 +2495,7 @@ class SessionManager:
                     # anomaly: keep the pre-existing WARNING for it (same
                     # message, same discard path — severity only).
                     try:
-                        ttl_alive = (
-                            hasattr(provider, "is_process_alive") and provider.is_process_alive()
-                        )
+                        ttl_alive = provider.is_process_alive()
                     except Exception:
                         ttl_alive = False
                     ttl_log = logger.info if ttl_alive else logger.warning
@@ -2512,11 +2508,11 @@ class SessionManager:
                     to_shutdown.append(provider)
                     continue
                 try:
-                    alive = hasattr(provider, "is_process_alive") and provider.is_process_alive()
+                    alive = provider.is_process_alive()
                 except Exception:
                     alive = False
                 if not alive:
-                    rc = provider.exit_code if hasattr(provider, "exit_code") else None
+                    rc = provider.exit_code
                     logger.warning(
                         "Pool health: dead provider (pid=%s, returncode=%s, age=%.0fs), discarding",
                         pid,
@@ -2982,10 +2978,9 @@ class SessionManager:
                     # with is_new=True — ensuring full context re-injection.
                     # Use process-level check, not is_alive() which has a 600s
                     # stale-activity threshold that falsely kills idle sessions.
-                    if hasattr(sess.provider, "is_process_alive"):
-                        _alive = sess.provider.is_process_alive()
-                    else:
-                        _alive = sess.provider.is_alive()
+                    # The ABC defaults is_process_alive to is_alive(), so the
+                    # direct call needs no capability probe.
+                    _alive = sess.provider.is_process_alive()
                     if not _alive:
                         # CC per_session: process died but session state is on
                         # disk — reconnect transparently instead of removing.
@@ -5500,10 +5495,10 @@ class SessionManager:
         if sess is None:
             return None
         # Use process-level check, not is_alive() which has a 600s
-        # stale-activity threshold that falsely kills idle sessions.
-        if hasattr(sess.provider, "is_process_alive"):
-            return sess.provider.is_process_alive()
-        return sess.provider.is_alive()
+        # stale-activity threshold that falsely kills idle sessions. The ABC
+        # defaults is_process_alive to is_alive(), so the direct call needs
+        # no capability probe.
+        return sess.provider.is_process_alive()
 
     def get_approval_policy(self, key: str) -> str:
         """Return the approval policy for a session, or empty string."""

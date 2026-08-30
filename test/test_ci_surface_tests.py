@@ -213,6 +213,84 @@ def test_frontend_escape_patterns_are_detected(selector, tmp_path) -> None:
     assert selector._is_cross_surface(inside, selector._FRONTEND_FOREIGN) is False
 
 
+def test_backend_owned_config_references_are_cross_surface(selector, tmp_path) -> None:
+    """A spec naming a backend-owned config file must stay in the must-run set.
+
+    pyproject.toml, setup.cfg and the other TOML/CFG/YAML configs are all
+    backend-owned (the one exception, website/AUTOSDE.yaml, only makes the
+    match over-broad, which costs CI time), and a spec reaches them through
+    a pre-computed root constant -- no ``../../../`` escape and no
+    ``kiro_crew`` marker on the referencing line:
+
+        const version = readFileSync(join(REPO_ROOT, 'pyproject.toml'), ...)
+
+    With only directory/name/`.py` markers in the pattern, such a spec was
+    classified single-surface and SKIPPED on a backend-only diff -- the
+    exact silent-drop this selector exists to prevent. Measured live guards
+    that this closes: ``releaseVersion.test.ts`` (pins release.yml's version
+    mapping) and ``frontendBlobReconcile.wireFormat.test.ts`` (pins the
+    reconcile script ci.yml runs).
+    """
+    toml = tmp_path / "a.test.ts"
+    toml.write_text(
+        "const REPO_ROOT = resolve(__dirname, '..', '..', '..')\n"
+        "const version = readFileSync(join(REPO_ROOT, 'pyproject.toml'), 'utf-8')\n"
+    )
+    assert selector._is_cross_surface(toml, selector._FRONTEND_FOREIGN) is True
+
+    cfg = tmp_path / "b.test.ts"
+    cfg.write_text("const defaults = readFileSync(join(REPO_ROOT, 'setup.cfg'), 'utf-8')\n")
+    assert selector._is_cross_surface(cfg, selector._FRONTEND_FOREIGN) is True
+
+    yaml = tmp_path / "c.test.ts"
+    yaml.write_text("// parity: release.yml maps v0.6.0-rc.2 to the wheel version 0.6.0rc2\n")
+    assert selector._is_cross_surface(yaml, selector._FRONTEND_FOREIGN) is True
+
+
+def test_frontend_owned_config_reference_is_cross_surface(selector, tmp_path) -> None:
+    """The mirror: a backend guard naming the frontend's config file by bare name.
+
+    ``tsconfig.json`` lives inside website/, so a realistic reference carries
+    ``website`` in its path -- but a guard that quotes the filename alone
+    (a joined path built from constants, a fixture table of config names)
+    had no marker at all. Bare extensions cannot close this direction the
+    way they close the mirror: the backend owns .toml/.cfg/.yaml/.json
+    configs of its own, so only frontend-owned config NAMES are added here.
+    """
+    guard = tmp_path / "test_tsconfig_parity.py"
+    guard.write_text(
+        "# parity: the shipped tsconfig.json must not gain references\n"
+        'TS_CONFIG = REPO / "tsconfig.json"\n'
+    )
+    assert selector._is_cross_surface(guard, selector._BACKEND_FOREIGN) is True
+
+
+def test_own_surface_config_references_stay_single_surface(selector, tmp_path) -> None:
+    """The asymmetry is the point: each surface's OWN configs must not trip it.
+
+    A backend test reading pyproject.toml or setup.cfg is reading its own
+    surface, and a frontend spec reading package.json or tsconfig.json is
+    doing the same -- neither is a parity guard. This pins that the new
+    terms went in per-direction, not as bare extensions on both patterns
+    (which would have flooded the must-run set: 51 backend files reference
+    a .yaml of their own).
+    """
+    backend_own = tmp_path / "test_own_cfg.py"
+    backend_own.write_text(
+        'VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]\n'
+        "PARSER = configparser.ConfigParser()\n"
+        'PARSER.read(ROOT / "setup.cfg")\n'
+    )
+    assert selector._is_cross_surface(backend_own, selector._BACKEND_FOREIGN) is False
+
+    frontend_own = tmp_path / "own-configs.test.ts"
+    frontend_own.write_text(
+        "const pkg = JSON.parse(readFileSync('package.json', 'utf-8'))\n"
+        "const ts = readFileSync('tsconfig.json', 'utf-8')\n"
+    )
+    assert selector._is_cross_surface(frontend_own, selector._FRONTEND_FOREIGN) is False
+
+
 # ---------------------------------------------------------------------------
 # Windows: the reduced scope must not name a suite Windows cannot collect
 # ---------------------------------------------------------------------------

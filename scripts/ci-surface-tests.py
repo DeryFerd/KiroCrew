@@ -57,6 +57,7 @@ _BACKEND_FOREIGN = re.compile(
     | \.tsx?\b             # a TypeScript filename appearing in an assertion
     | \.mjs\b
     | \.plist\b
+    | tsconfig\.json       # the frontend's config file, referenced by bare name
     | entitlements
     | \bnpm\b
     | vitest
@@ -72,6 +73,13 @@ _BACKEND_FOREIGN = re.compile(
 # eyeball grep kept missing:
 #   1. string literals   -- '../../../src/kiro_crew/connections/registry.json'
 #   2. path segments     -- path.resolve(__dirname, '..', '..', '..', 'test')
+#
+# Backend-owned config extensions close the last bare-name gap: a spec reads
+# pyproject.toml / setup.cfg / a workflow .yml through a pre-computed root
+# constant, so neither the escape forms nor a package name appear on the
+# referencing line. .yaml is almost backend-owned (workflows, compose);
+# website/AUTOSDE.yaml is the one frontend-owned exception, and per the
+# header above over-matching it only costs CI time.
 # ---------------------------------------------------------------------------
 _FRONTEND_FOREIGN = re.compile(
     r"""
@@ -84,6 +92,9 @@ _FRONTEND_FOREIGN = re.compile(
     | test[\\/]fixtures                               # shared parity fixtures
     | \bdocker\b
     | \.py\b                                          # a Python file in an assertion
+    | \.toml\b                                        # backend-owned config extensions
+    | \.cfg\b
+    | \.ya?ml\b
     """,
     re.VERBOSE,
 )

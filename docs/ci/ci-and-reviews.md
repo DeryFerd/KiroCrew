@@ -213,7 +213,9 @@ PR-time proof only, no publishing.
 `build-desktop.yml` in the release lane both build the real `kirocrew-backend`
 tree via `packaging/build-desktop.sh` — which provisions a
 python-build-standalone interpreter and pip-installs the project into it — and
-then only upload the artifact. The wheel lane at least runs `kirocrew --version`.
+then only upload the artifact. The wheel lanes at least run
+`kirocrew --version` — both the PR-time `build-wheel` job and the reusable
+`build-wheel.yml`, whose artifact is what `publish-cli.yml` ships.
 So a packaging change that breaks the packaged app (a layout change, a launcher
 rename, a dependency that fails to install into the bundled interpreter) passes
 every gate: the tests that cover packaged-app behavior monkeypatch `sys.frozen`

@@ -81,6 +81,16 @@ jobs:
           pip install --upgrade build
           python -m build
 
+      # The PR lane's smoke (build.yml) runs on different bytes: the wheel
+      # version and the distribution channel are stamped only in this lane, and
+      # this artifact is what publish-cli.yml ships. Install it and run the
+      # entrypoint, so a console-script or dependency regression that only
+      # appears after pip install fails here instead of on the user's machine.
+      - name: Verify wheel installs cleanly
+        run: |
+          pip install dist/*.whl
+          kirocrew --version
+
       # Guard against MANIFEST.in regressions (e.g. a global-exclude silently
       # stripping a vendored runtime from the sdist, and therefore from the
       # wheel built from it). Shared with build.yml's PR-time gate so the two

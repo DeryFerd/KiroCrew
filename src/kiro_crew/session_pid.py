@@ -1551,14 +1551,18 @@ def _kill_orphan_gatewayd(pid: int, cmdline: bytes) -> int:
     any foreign process.
     """
     try:
-        os.kill(pid, signal.SIGTERM)
+        platform_compat.kill_pid(pid, platform_compat.SIGTERM)
     except ProcessLookupError:
         return 0
     deadline = time.monotonic() + _GATEWAYD_TERM_GRACE_SECONDS
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        # platform_compat.pid_exists, not a raw `os.kill(pid, 0)`: on Windows a
+        # signal-zero "probe" TERMINATES the target instead of testing it, and
+        # raw os.kill/SIGKILL do not exist there. This path is POSIX-only in
+        # practice, but routing through the shim keeps it correct on its own
+        # terms rather than depending on a caller's early-out — the same
+        # rationale the browser-daemon probe below already carries.
+        if not platform_compat.pid_exists(pid):
             _sel_orphan_kill(pid, pid, cmdline, "sigterm")
             return 1
         time.sleep(0.1)
@@ -1574,7 +1578,7 @@ def _kill_orphan_gatewayd(pid: int, cmdline: bytes) -> int:
         if pgid == pid and pgid != os.getpgrp() and pgid > 1:
             os.killpg(pgid, signal.SIGKILL)
         else:
-            os.kill(pid, signal.SIGKILL)
+            platform_compat.kill_pid(pid, platform_compat.SIGKILL)
     except (ProcessLookupError, OSError):
         pass
     _sel_orphan_kill(pid, pid, cmdline, "sigterm+sigkill")
@@ -2021,13 +2025,15 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                 else:
                     # Candidate already passed UID + orphan-ppid + positive MCP
                     # marker + two-phase active-PID re-verify + cmdline re-check.
-                    # Direct os.kill of the confirmed-orphan PID only — NOT a tree
-                    # walk. _kill_pid_tree is gated by kiro-cli/claude markers that
+                    # Direct kill of the confirmed-orphan PID only — NOT a tree
+                    # walk, through the platform_compat shim like the work-tree
+                    # reaper above (exception types are identical on POSIX).
+                    # _kill_pid_tree is gated by kiro-cli/claude markers that
                     # MCP processes don't carry. If this orphan shares a pgid (not
                     # its own group leader) and has children, those children that
                     # carry an MCP marker are reclaimed on a subsequent sweep; any
                     # without a marker were never sweep candidates to begin with.
-                    os.kill(pid, signal.SIGKILL)
+                    platform_compat.kill_pid(pid, platform_compat.SIGKILL)
                     killed += 1
                     _sel_orphan_kill(pid, pgid, cmdline, "kill")
                 continue

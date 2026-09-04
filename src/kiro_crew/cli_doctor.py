@@ -1423,6 +1423,8 @@ def _linger_enabled(user: str) -> bool | None:
             ["loginctl", "show-user", user, "-p", "Linger", "--value"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
@@ -1659,6 +1661,8 @@ def _detect_userspace_oom_killer() -> str | bool | None:
                 [systemctl, "is-active", unit],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
         except (OSError, subprocess.SubprocessError):
@@ -2739,6 +2743,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 [KIRO_CLI_BIN, "whoami"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if r.returncode == 0:
@@ -2768,6 +2774,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 ["node", "-v"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             major = int(node_ver_result.stdout.strip().lstrip("v").split(".")[0])
@@ -3337,7 +3345,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     print("\nConnectivity")
     if kiro:
         kiro_result = subprocess.run(
-            [KIRO_CLI_BIN, "--version"], capture_output=True, text=True, timeout=5
+            [KIRO_CLI_BIN, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
         )
         if kiro_result.returncode == 0:
             ver = kiro_result.stdout.strip() or kiro_result.stderr.strip()

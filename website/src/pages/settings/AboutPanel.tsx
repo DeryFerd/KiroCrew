@@ -122,52 +122,8 @@ function updateErrorText(st: UpdateState | null | undefined): string {
   }
 }
 
-type UpdateInfo = {
-  version?: string
-  channel?: string
-  stampedChannel?: string | null
-  channelSwitchable?: boolean
-  channelPreference?: string
-  /**
-   * Whether a discovered update downloads without a click. ON by default in the
-   * desktop shell; `undefined` from a shell that predates the preference, which
-   * is why the toggle reads it as `!== false` rather than truthy.
-   */
-  autoDownload?: boolean
-  platform?: string
-  /** Manual-reinstall permalink from the main process; absent when no lane. */
-  downloadUrl?: string | null
-  packaged?: boolean
-  disabled?: string
-  /** Externally-managed metadata; both empty on a self-updating install. */
-  managedBy?: string
-  updateCommand?: string
-  /**
-   * What the FOLLOWED channel's feed last reported, and whether these bytes are
-   * ahead of it (that lane never published this build, so the install is not on
-   * it). Both come from the feed, because `stampedChannel` cannot answer it: a
-   * promoted stable release ships the soaked candidate's bytes unchanged, so its
-   * version keeps an insider stamp. `''` / `null` / `undefined` = no check has
-   * completed yet, which consumers must treat as UNKNOWN, never as "ahead".
-   */
-  laneVersion?: string
-  runningAheadOfLane?: boolean | null
-}
-
-type UpdateAPI = {
-  onState: (cb: (payload: UpdateState) => void) => (() => void)
-  check: () => Promise<unknown>
-  download: () => Promise<unknown>
-  install: () => Promise<unknown>
-  getInfo: () => Promise<UpdateInfo>
-  setChannel?: (channel: string) => Promise<{ ok: boolean; error?: string }>
-  // Optional so the panel still renders against an older desktop shell whose
-  // preload has no such bridge: the toggle is hidden rather than throwing.
-  setAutoDownload?: (enabled: boolean) => Promise<{ ok: boolean; error?: string }>
-}
-
 function getUpdateApi(): UpdateAPI | undefined {
-  return (window as unknown as { updateAPI?: UpdateAPI }).updateAPI
+  return window.updateAPI
 }
 
 // Subtle accent tint for the version pill + build chips (works with any theme's
@@ -624,7 +580,7 @@ export function AboutPanel() {
   // Desktop (Electron) app info (version, channel, platform)
   const { data: info, isError: infoError } = useQuery({
     queryKey: ['update-info'],
-    queryFn: () => desktopApi!.getInfo(),
+    queryFn: () => desktopApi!.getInfo!(),
     enabled: isDesktop,
     staleTime: Infinity, // static per session
   })
@@ -645,7 +601,7 @@ export function AboutPanel() {
   })
   // Explicit consent actions (macOS Software Update semantics): downloading
   // and installing each happen only when the user clicks.
-  const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download() })
+  const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download!() })
   const installMutation = useMutation({ mutationFn: () => desktopApi!.install() })
   // Install is a ONE-WAY door, so the control must never become actionable
   // again. Note isSuccess, not just isPending: `update:install` resolves as soon

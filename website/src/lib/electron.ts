@@ -15,7 +15,7 @@
  * neither `.mac-electron` nor `.win-electron` applies, which is the correct
  * zero-inset layout, locked in by App.linuxElectron.test.tsx.
  */
-const mc = (window as { kirocrew?: { isElectron?: boolean; platform?: string; linuxFrameless?: boolean } }).kirocrew
+const mc = window.kirocrew
 
 export const isElectron = !!mc?.isElectron
 export const isMacElectron = isElectron && mc?.platform === 'darwin'
@@ -48,7 +48,7 @@ export const LINUX_CAPTION_CONTROLS_WIDTH = 108
  * does.
  */
 export function electronPlatform(): string | undefined {
-  return (window as { kirocrew?: { platform?: string } }).kirocrew?.platform
+  return window.kirocrew?.platform
 }
 
 /**
@@ -61,7 +61,7 @@ export function electronPlatform(): string | undefined {
  * `window.kirocrew` per-case without import-order coupling.
  */
 export function pathForFile(file: File): string {
-  const k = (window as { kirocrew?: { getPathForFile?: (f: File) => string } }).kirocrew
+  const k = window.kirocrew
   try {
     return k?.getPathForFile?.(file) || ''
   } catch {

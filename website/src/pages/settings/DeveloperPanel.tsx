@@ -39,7 +39,7 @@ export function DeveloperPanel() {
     setDevMode(v)
     window.dispatchEvent(new CustomEvent(DEV_MODE_EVENT, { detail: v }))
     // Notify Electron main process to show/hide DevTools menu item
-    ;(window as Window & { electronAPI?: { setDevMode?: (v: boolean) => void } }).electronAPI?.setDevMode?.(v)
+    window.electronAPI?.setDevMode?.(v)
   }
 
   return (

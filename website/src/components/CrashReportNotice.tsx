@@ -37,12 +37,7 @@ import { i18nT } from '../i18n/t'
  * where there is no local disk holding crash artifacts to reveal — the banner
  * simply never renders, rather than offering an action that cannot work.
  */
-type CrashReportsAPI = {
-  get(): Promise<{ newCount: number }>
-  reveal(): Promise<{ ok: boolean; error?: string }>
-}
-const crashReportsAPI = (): CrashReportsAPI | undefined =>
-  (window as { crashReportsAPI?: CrashReportsAPI }).crashReportsAPI
+const crashReportsAPI = (): CrashReportsAPI | undefined => window.crashReportsAPI
 
 export default function CrashReportNotice() {
   const [count, setCount] = useState(0)

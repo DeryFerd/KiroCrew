@@ -747,9 +747,7 @@ function useThemeState(): ThemeContextValue {
   // `prefers-color-scheme` immediately; Chromium then fires a change event on
   // the media query below if the effective value moved. No-op in a browser.
   useEffect(() => {
-    const bridge = (window as unknown as {
-      electronAPI?: { setThemeMode?: (pref: string) => void }
-    }).electronAPI
+    const bridge = window.electronAPI
     bridge?.setThemeMode?.(mode)
   }, [mode])
 
@@ -757,9 +755,7 @@ function useThemeState(): ThemeContextValue {
   // mode changes. The overlay strip must match the dashboard chrome at all
   // times; sending on `resolved` (not `mode`) handles Auto switching correctly.
   useEffect(() => {
-    const bridge = (window as unknown as {
-      electronAPI?: { setTitleBarOverlayTheme?: (mode: string) => void }
-    }).electronAPI
+    const bridge = window.electronAPI
     bridge?.setTitleBarOverlayTheme?.(resolved)
   }, [resolved])
 
@@ -767,9 +763,7 @@ function useThemeState(): ThemeContextValue {
   // launch's boot splash (loading.html) paints in the user's chosen colour.
   // Reads the computed --accent after paint; a no-op in a plain browser.
   useEffect(() => {
-    const bridge = (window as unknown as {
-      electronAPI?: { setThemeAccent?: (hex: string) => void }
-    }).electronAPI
+    const bridge = window.electronAPI
     if (!bridge?.setThemeAccent) return
     const id = requestAnimationFrame(() => {
       const hex = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()

@@ -3889,9 +3889,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Same active-slot guard as the mirror path: a background session's page must
   // not open another session's panel.
   useEffect(() => {
-    const api = (window as unknown as {
-      browserAPI?: { onAgentOpened?: (cb: (p: { panelId?: string }) => void) => () => void }
-    }).browserAPI
+    const api = window.browserAPI
     if (!api?.onAgentOpened) return      // plain browser (no preload bridge)
     return api.onAgentOpened(({ panelId }) => {
       if (!panelId || panelId !== activeSlotRef.current) return

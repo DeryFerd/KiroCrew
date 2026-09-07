@@ -976,7 +976,7 @@ function NotificationsBellButton() {
 
   // RFC Phase 4: mirror the unread count onto the desktop dock/taskbar badge.
   useEffect(() => {
-    const api = (window as Window & { electronAPI?: { setBadgeCount?: (n: number) => void } }).electronAPI
+    const api = window.electronAPI
     api?.setBadgeCount?.(unacked.length)
   }, [unacked.length])
   const selected = selectedTs ? items.find(n => n.ts === selectedTs) || null : null
@@ -1661,7 +1661,7 @@ export default function App() {
     // header's is: both stay MOUNTED and slide, so a shadow that is always on
     // paints its tail into the content while the surface itself is off screen.
     document.body.classList.toggle('mc-focus-rail', railPeek.open)
-    const api = (window as Window & { electronAPI?: { setFocusModeChrome?: (v: boolean) => void } }).electronAPI
+    const api = window.electronAPI
     api?.setFocusModeChrome?.(focusChromeVisible)
   }, [focusActive, focusChromeVisible, railPeek.open])
   // Same re-assert on window focus. Button visibility is window state this
@@ -1670,7 +1670,7 @@ export default function App() {
   useEffect(() => {
     if (!focusActive) return
     const reassert = () => {
-      const api = (window as Window & { electronAPI?: { setFocusModeChrome?: (v: boolean) => void } }).electronAPI
+      const api = window.electronAPI
       api?.setFocusModeChrome?.(focusChromeVisible)
     }
     window.addEventListener('focus', reassert)
@@ -1681,7 +1681,7 @@ export default function App() {
   // between the two commits.
   useEffect(() => () => {
     document.body.classList.remove('mc-focus-mode', 'mc-focus-chrome', 'mc-focus-rail')
-    const api = (window as Window & { electronAPI?: { setFocusModeChrome?: (v: boolean) => void } }).electronAPI
+    const api = window.electronAPI
     api?.setFocusModeChrome?.(true)
   }, [])
   const [sidePanelDock] = useSidePanelDock()
@@ -1709,7 +1709,7 @@ export default function App() {
   // had not: the traffic lights came back.
   useEffect(() => {
     if (!focusActive) return
-    const api = (window as Window & { electronAPI?: { setFocusModeChrome?: (v: boolean) => void } }).electronAPI
+    const api = window.electronAPI
     api?.setFocusModeChrome?.(focusChromeVisible)
   }, [activeInstanceId, focusActive, focusChromeVisible])
   // Whether the shell's one-shot entrance animation has already played.
@@ -2634,7 +2634,7 @@ export default function App() {
   }, [])
   // Sync dev-mode state to Electron on startup (so View > DevTools menu is correct)
   useEffect(() => {
-    const electronAPI = (window as Window & { electronAPI?: { setDevMode?: (v: boolean) => void } }).electronAPI
+    const electronAPI = window.electronAPI
     electronAPI?.setDevMode?.(devMode)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Native app-menu navigation (Settings…, About) and the Crew Companion's "Open
@@ -2648,7 +2648,7 @@ export default function App() {
   // would surface the dashboard with the previous session still on screen: the
   // window comes forward and the notification appears to have opened nothing.
   useEffect(() => {
-    const electronAPI = (window as Window & { electronAPI?: { onNavigate?: (cb: (path: string) => void) => () => void } }).electronAPI
+    const electronAPI = window.electronAPI
     if (!electronAPI?.onNavigate) return
     return electronAPI.onNavigate(path => {
       if (typeof path !== 'string' || !/^\/(?!\/)/.test(path)) return

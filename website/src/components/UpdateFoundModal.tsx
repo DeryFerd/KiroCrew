@@ -41,10 +41,8 @@ import type { UpdateState } from '../hooks/useUpdateSubscription'
  * installs from merely showing this modal.
  */
 
-type UpdateAPI = { download?: () => Promise<unknown> }
-
 function getUpdateApi(): UpdateAPI | undefined {
-  return (window as unknown as { updateAPI?: UpdateAPI }).updateAPI
+  return window.updateAPI
 }
 
 /**
@@ -102,8 +100,7 @@ export default function UpdateFoundModal() {
   const { data: bridgeInfo } = useQuery({
     queryKey: ['update-info'],
     queryFn: async () =>
-      (window as unknown as { updateAPI?: { getInfo?: () => Promise<{ autoDownload?: boolean; channel?: string | null }> } })
-        .updateAPI?.getInfo?.() ?? null,
+      window.updateAPI?.getInfo?.() ?? null,
     enabled: !!desktop && (desktop.state === 'found' || desktop.state === 'available'),
     staleTime: Infinity,
   })

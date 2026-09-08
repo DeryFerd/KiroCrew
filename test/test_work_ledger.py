@@ -13,7 +13,10 @@ stood alone, so that phase reverted by deleting two files).
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1415,6 +1418,84 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
         item = wl.read_work_item(key, item_id)
         assert item is not None
         assert (item.worker_session_key == WORKER) == ((key, item_id) == binding)
+
+
+def _racing_resolve(tmp_path, monkeypatch):
+    """Make the second resolve under the data home land on a sibling prefix.
+
+    Models the Windows-shard misfire in
+    ``test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding``:
+    the containment checks resolve the child and then the base, and on a runner
+    whose temp path carries a short (8.3) component those two resolves can read
+    different prefix forms once the directory appears between them, so a benign
+    key is refused as path traversal. Flipping one resolve onto a sibling
+    prefix reproduces the divergence deterministically on any machine.
+    """
+    root = str(wl._work_ledger_root())
+    other = str(tmp_path / "aliased-prefix")
+    real_resolve = Path.resolve
+    state = {"resolves": 0}
+
+    def racing_resolve(self, strict=False):
+        result = real_resolve(self, strict=strict)
+        if str(result).startswith(root):
+            state["resolves"] += 1
+            if state["resolves"] == 2:
+                return Path(str(result).replace(root, other, 1))
+        return result
+
+    monkeypatch.setattr(Path, "resolve", racing_resolve)
+
+
+def test_binding_path_does_not_refuse_a_benign_key_when_the_prefix_flips(tmp_path, monkeypatch):
+    """The containment guard compares one resolved base against a child that
+    is composed from it, so no second filesystem resolve can race the
+    directory's own creation and split the prefix forms."""
+    _racing_resolve(tmp_path, monkeypatch)
+    wl.binding_path(WORKER)
+
+
+def test_conductor_dir_does_not_refuse_a_benign_key_when_the_prefix_flips(tmp_path, monkeypatch):
+    """Same containment shape as :func:`binding_path`, same guarantee."""
+    _racing_resolve(tmp_path, monkeypatch)
+    wl.conductor_dir(CONDUCTOR)
+
+
+def _plant_link(path: Path, target: Path) -> None:
+    """Plant a link at *path* pointing at *target*; junction on Windows."""
+    try:
+        os.symlink(target, path, target_is_directory=target.is_dir())
+    except OSError:
+        if sys.platform == "win32" and target.is_dir():
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(path), str(target)],
+                check=True,
+                capture_output=True,
+                cwd=str(path.parent),
+            )
+        else:
+            pytest.skip("this host cannot plant the link")
+
+
+def test_binding_path_refuses_a_link_planted_at_the_child(tmp_path):
+    """The ledger is a writable leaf, so a link planted at the composed child
+    name would carry reads and lock writes outside it. The containment guard
+    must reject the link even though the composed name itself is clean."""
+    wl.bindings_dir().mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _plant_link(wl.bindings_dir() / f"{wl._store_name(WORKER)}.json", outside)
+    with pytest.raises(wl.WorkLedgerError):
+        wl.binding_path(WORKER)
+
+
+def test_conductor_dir_refuses_a_link_planted_at_the_child(tmp_path):
+    wl._work_ledger_root().mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _plant_link(wl._work_ledger_root() / wl._store_name(CONDUCTOR), outside)
+    with pytest.raises(wl.WorkLedgerError):
+        wl.conductor_dir(CONDUCTOR)
 
 
 def test_acquiring_a_lock_does_not_truncate_the_lock_file():

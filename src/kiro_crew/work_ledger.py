@@ -54,8 +54,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
+import stat
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -482,14 +484,35 @@ def conductor_dir(slot_key: str) -> Path:
         raise WorkLedgerError(
             f"invalid slot key for work ledger: {slot_key!r}", code=CODE_INVALID_VALUE
         )
-    base = _work_ledger_root()
-    resolved = (base / _store_name(slot_key)).resolve()
-    parent = base.resolve()
+    parent = _work_ledger_root().resolve()
+    resolved = parent / _store_name(slot_key)
     if resolved == parent or not resolved.is_relative_to(parent):
         raise WorkLedgerError(
             f"path traversal blocked for slot key: {slot_key!r}", code=CODE_INVALID_VALUE
         )
+    _refuse_planted_link(resolved, "slot key", slot_key)
     return resolved
+
+
+def _refuse_planted_link(child: Path, key_kind: str, slot_key: str) -> None:
+    """Refuse a symlink or junction planted at the composed child path.
+
+    The containment above is lexical and race-free by construction, so it
+    cannot see a pre-existing link at the child; the ledger is a writable
+    leaf, and a link planted there would carry reads and lock writes outside
+    it. ``lstat`` looks at the final component only, so there is no resolve
+    walk here to race the directory's own creation.
+    """
+    try:
+        st = os.lstat(child)
+    except OSError:
+        return  # the child does not exist: nothing planted to refuse
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & reparse:
+        raise WorkLedgerError(
+            f"path traversal blocked for {key_kind}: {slot_key!r}",
+            code=CODE_INVALID_VALUE,
+        )
 
 
 def items_dir(slot_key: str) -> Path:
@@ -524,13 +547,19 @@ def binding_path(worker_slot_key: str) -> Path:
         raise WorkLedgerError(
             f"invalid worker slot key: {worker_slot_key!r}", code=CODE_INVALID_VALUE
         )
-    base = bindings_dir()
-    resolved = (base / f"{_store_name(worker_slot_key)}.json").resolve()
-    if not resolved.is_relative_to(base.resolve()):
+    parent = bindings_dir().resolve()
+    # Lexical containment on purpose: the child is composed from the resolved
+    # parent, so it cannot escape (the store name carries no separators), and
+    # no second filesystem resolve exists to disagree with this one about the
+    # parent's prefix form once the directory appears mid-check — a benign key
+    # is otherwise refused as path traversal on aliased prefixes.
+    resolved = parent / f"{_store_name(worker_slot_key)}.json"
+    if not resolved.is_relative_to(parent):
         raise WorkLedgerError(
             f"path traversal blocked for worker key: {worker_slot_key!r}",
             code=CODE_INVALID_VALUE,
         )
+    _refuse_planted_link(resolved, "worker key", worker_slot_key)
     return resolved
 
 

@@ -33,6 +33,8 @@ The store is not registered in `security._CREW_SECRET_LEAVES`, as `mcp_quarantin
 
 **Recording.** `_run_mcp_probe` and `api_mcp_probe` call `_record_probe_verdicts` off the event loop, and `_record_probe_verdicts` performs extraction and persistence in the same worker call. `TestAnnotation.test_recording_is_offloaded_whole` enforces that ordering. `_WRITE_LOCK` serializes every load-modify-save mutation so a reset cannot lose a concurrent probe update; `TestStore.test_every_mutation_holds_the_write_lock_across_load_and_save` enforces the critical section.
 
+**Durability.** `_save` writes with `atomic_write(fsync=True)` and syncs the parent directory with `fsync_dir(..., best_effort=True)`, so a crash after the rename cannot revert the store to its previous entry; `TestStore.test_store_writes_are_fsynced` and `test_store_write_syncs_the_parent_directory` enforce both halves.
+
 **Reading.** `_annotate_quarantine` obtains one `snapshot` per response and stamps rows at response time, so a reset appears on the next poll without a new probe. `TestStore.test_snapshot_reads_the_store_once_regardless_of_size` and `TestAnnotation.test_every_row_returning_endpoint_annotates` enforce those properties.
 
 **Read and write failure policy.** `_load` fails open for display: an unreadable or malformed store produces no row annotation because an unavailable diagnostic must not label the fleet. `TestStore.test_a_corrupt_store_fails_open` enforces this reader behavior.

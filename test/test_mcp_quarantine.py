@@ -558,6 +558,51 @@ class TestStore:
         mcp_quarantine.clear("airbnb")
         assert held == [True, True], "a mutation reached its write without the lock"
 
+    def test_store_writes_are_fsynced(self, store, monkeypatch):
+        """The quarantine counter must survive a power loss between the atomic
+        rename and the directory sync.
+
+        The store records refusal readings for the dashboard annotation and
+        the clear endpoint; a write lost to a crash silently drops that
+        record. ``atomic_write`` only carries durability when the caller asks
+        for it — every durable store write in the tree opts in explicitly.
+        """
+        seen: list[bool] = []
+        real = mcp_quarantine.atomic_write
+
+        def watching(*a, **k):
+            seen.append(bool(k.get("fsync")))
+            return real(*a, **k)
+
+        monkeypatch.setattr(mcp_quarantine, "atomic_write", watching)
+        mcp_quarantine.record_verdicts(_fail("airbnb"))
+        assert seen == [True], "the quarantine store write did not request fsync"
+
+    def test_store_write_syncs_the_parent_directory(self, store, monkeypatch):
+        """The rename needs the directory entry durable, not just the content.
+
+        ``atomic_write(fsync=True)`` covers the file and never the parent
+        directory; a crash between the rename and the OS's own directory
+        flush reverts the store to the previous entry. ``fsync_dir`` closes
+        the gap, and it runs ``best_effort=True``: by that point the rename
+        has already committed the write, so raising would report a persisted
+        entry — a ``clear``'s reset included — as failed.
+        """
+        calls: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            mcp_quarantine,
+            "fsync_dir",
+            lambda path, **k: calls.append((str(path), k)),
+        )
+        mcp_quarantine.record_verdicts(_fail("airbnb"))
+        assert len(calls) == 1, "the store write did not sync its parent directory"
+        path, kwargs = calls[0]
+        assert path == str(mcp_quarantine.store_path().parent)
+        assert kwargs.get("best_effort") is True, (
+            "the rename has already committed the write; a strict directory "
+            "sync would report a persisted reset as failed"
+        )
+
     def test_snapshot_reads_the_store_once_regardless_of_size(self, store, monkeypatch):
         """Pins the fix for a quadratic read on the event loop.
 

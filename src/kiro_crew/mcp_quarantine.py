@@ -43,7 +43,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import data_home
 
@@ -341,7 +341,16 @@ def _save(servers: dict[str, dict[str, Any]]) -> None:
     and only the callers know which one applies.
     """
     payload = {"version": STORE_VERSION, "servers": servers}
-    atomic_write(store_path(), json.dumps(payload, indent=2) + "\n")
+    # fsync: a crash between the atomic rename and the OS's own directory
+    # flush reverts the store to its previous entry, silently dropping the
+    # recorded reading. atomic_write's fsync covers the file content;
+    # fsync_dir covers the rename's directory entry, the half the OS flushes
+    # last. best_effort: by the time the directory sync runs, atomic_write has
+    # already COMMITTED the entry — raising here would report a persisted
+    # write (a clear's reset included) as failed, and a retry against a record
+    # that is already gone from disk then finds nothing to clear.
+    atomic_write(store_path(), json.dumps(payload, indent=2) + "\n", fsync=True)
+    fsync_dir(store_path().parent, best_effort=True)
 
 
 def record_verdicts(verdicts: Iterable[tuple[str, str, str]]) -> None:

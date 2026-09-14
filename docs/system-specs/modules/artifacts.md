@@ -638,6 +638,38 @@ every write-side unit test still green — so test the round-trip
 - **Sensitive paths** — every read and write goes through
   `security.is_sensitive_path()`; the store refuses to instantiate at any
   sensitive root.
+- **Leaf pinning** — the store root is `config_dir()/artifacts`, which is in
+  none of the sandbox's three crew-home dispositions, so an in-sandbox process
+  can plant a link in the tree these readers walk. `_read_text()`,
+  `_write_text()` and `_write_bytes()` each pair two controls:
+  `platform_compat.open_file_no_reparse` on the **unresolved** leaf, so the open
+  is what meets a link (`O_NOFOLLOW` on POSIX, `FILE_FLAG_OPEN_REPARSE_POINT` on
+  Windows, where `getattr(os, "O_NOFOLLOW", 0)` is `0` and a bare `os.open`
+  follows a reparse point), plus a store-root confinement judged twice: on the
+  resolved path before the open, and again on `pinned_fs.fd_real_path(fd)` after
+  it, so an ancestor swapped in that window cannot redirect the traversal. The
+  open passes `nonblocking=True`, because a FIFO at the leaf otherwise leaves a
+  blocking `O_RDONLY` waiting for a writer while callers sit inline on the
+  gateway event loop. A hardlinked inode and a
+  non-regular file are refused on the descriptor before any byte moves.
+  Writes stage under a unique `O_EXCL` name (so a name planted in advance cannot
+  be written through, and cleanup removes only what the call created) and publish
+  through a **pinned parent**: the leaf's directory is held open across both the
+  stage and the rename, and both halves resolve relative to that handle where the
+  `dir_fd` APIs exist. On hosts without them (`O_DIRECTORY`/`O_NOFOLLOW` are
+  POSIX-only) the directory is held open through `platform_compat.pin_directory`
+  instead, which on Windows cannot be renamed or deleted while the handle lives,
+  and the open refuses a reparse point already at the name.
+  `hooks.safe_read_file_bytes_nolink` is deliberately NOT the leaf control: its
+  `validate_file_path` canonicalizes first, so its own no-follow open never
+  meets a leaf symlink. `_read_image_asset_bytes()` reads through it for the
+  descriptor checks and pairs its own `within_root` comparison, which is the
+  same shape. No reader caps its input at `MAX_CONTENT_BYTES`: a bounded read
+  that a `snapshot` mirrors back to a linked source would truncate the user's own
+  file. Covered by `test/test_artifacts_text_no_follow.py`.
+  `ArtifactFolderStore._load()` reads its own `folders.json` by name and is not
+  yet pinned the same way; it is a distinct store over a private file rather than
+  an attacker-named leaf, so it is deferred rather than covered here.
 - **Relocate root confinement** — `PATCH /relocate` (and the `artifact_move`
   MCP tool) point a file-backed artifact at a `source_path`; a later GET reads
   that file, so an unconfined relocate would be an agent-reachable
@@ -660,7 +692,9 @@ every write-side unit test still green — so test the round-trip
   Routing through the platform-seam shim (not the bare `_redact_text`) means a
   loaded companion's extra credential/cookie regexes apply to the audit trail.
 - **Atomic writes** — `_write_text()` writes to a `.tmp` sibling and renames,
-  so a crash mid-write cannot corrupt `current.html` or `meta.json`.
+  so a crash mid-write cannot corrupt `current.html` or `meta.json`. The leaf is
+  validated (see **Leaf pinning**) before the stage, and a failed stage removes
+  its temp rather than leaving it behind.
 - **Tolerant load** — `_read_meta_file()` ignores unknown keys and supplies
   defaults for missing keys, so future schema additions don't break existing
   files.

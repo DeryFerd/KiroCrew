@@ -133,6 +133,31 @@ def persisted_session_agent(conv_log: Any | None, session_key: str) -> str:
     return session_agent_from_metadata(meta)
 
 
+def session_title_of(conv_log: Any | None, session_key: str, channel: str = "") -> str:
+    """The stored title for *session_key*, or the bare key as a stable fallback.
+
+    Discord, Teams and Telegram each grew their own copy of this read, so a fix
+    to the unwrap or the fallback landed in one and missed the others. The read
+    shape lives here for the same reason ``persisted_session_agent`` does: the
+    three adapters differ in addressing and wording, not in how they name a
+    resumed conversation.
+
+    Metadata access is blocking; async callers run this helper off the event loop
+    (see ``persisted_session_agent``). *channel* only names the caller in its
+    debug line, so a channel's log attribution survives the consolidation.
+    """
+    title = ""
+    if conv_log is not None:
+        try:
+            meta = conv_log.get_metadata(session_key)
+            title = str((meta or {}).get("title") or "")
+        except Exception:
+            logger.debug("%s resume: title lookup failed", channel or "session", exc_info=True)
+    # The picker's fallback for an untitled session, so a bootstrapped record
+    # names the conversation the way the user saw it listed.
+    return title or session_key.removeprefix("dashboard:")
+
+
 class ResumeReleaseError(RuntimeError):
     """A resumed binding removal could not be made durable."""
 

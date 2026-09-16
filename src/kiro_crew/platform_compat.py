@@ -4522,6 +4522,29 @@ def _is_junction_fallback(path: str | os.PathLike) -> bool:
     return getattr(info, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
 
 
+def strip_extended_length_prefix(path: Path) -> Path:
+    r"""*path* without Windows' extended-length prefix; unchanged elsewhere.
+
+    ``Path.resolve()`` on a file that another thread is replacing at that exact
+    moment comes back as ``\\?\C:\...``: ``ntpath.realpath`` drops the prefix
+    only after re-checking the stripped spelling, and that re-check fails when
+    the file has just been swapped out. The directory resolved separately comes
+    back plain, so a containment comparison reads the prefix alone as an escape.
+
+    The fold is LEXICAL and must stay that way: resolving again here could bless
+    a redirect, which is the thing the caller is trying to detect. Both
+    extended spellings are handled -- ``\\?\UNC\host\share`` becomes the
+    ordinary ``\\host\share`` -- so both sides of a comparison are spelled the
+    same way whatever ``realpath`` returned.
+    """
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return type(path)("\\\\" + text[8:])
+    if text.startswith("\\\\?\\"):
+        return type(path)(text[4:])
+    return path
+
+
 def is_link_or_junction(path: str | os.PathLike) -> bool:
     """True if *path* is a symlink OR (on Windows) a directory junction.
 

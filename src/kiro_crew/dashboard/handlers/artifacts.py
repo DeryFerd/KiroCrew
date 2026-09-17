@@ -89,6 +89,7 @@ from kiro_crew.security import (
     _B64_CHUNK_RE,
     _HARD_CREDENTIAL_RE,
     is_sensitive_path,
+    redact,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -836,8 +837,7 @@ def _scan_session_docs(
     """
 
     def _redact(text: str) -> str:
-        cleaned, _ = redact_credentials(text or "")
-        cleaned, _ = redact_exfiltration_urls(cleaned)
+        cleaned = redact(text or "")
         return cleaned
 
     out = _collect_session_docs(conversation_log, saved_map, session_key)
@@ -3820,8 +3820,7 @@ async def api_artifact_session_docs(request: web.Request) -> web.Response:
     try:
         docs = await _run_off_loop(work)
     except Exception as exc:  # noqa: BLE001 — audit + redacted 500 on any scan/list failure
-        _rc, _ = redact_credentials(str(exc))
-        safe_err, _ = redact_exfiltration_urls(_rc)
+        safe_err = redact(str(exc))
         _audit(
             tool="artifact_session_docs",
             request=request,
@@ -3868,8 +3867,7 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
     path = path.strip()
     # Redacted copy for audit/error metadata — never emit a raw (LLM-influenced)
     # path into the SEL audit log (credential/exfiltration redaction rule).
-    _rc, _ = redact_credentials(path)
-    audit_path, _ = redact_exfiltration_urls(_rc)
+    audit_path = redact(path)
     clog = getattr(state, "conversation_log", None)
     if clog is None:
         _audit(

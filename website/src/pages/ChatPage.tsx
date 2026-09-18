@@ -3400,7 +3400,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       try { applied = localStorage.getItem(`mc-webpreview-applied:${slot}`) || '' } catch { /* ignore */ }
       if (applied === norm || appliedPreviewMemRef.current[slot] === norm) return
       appliedPreviewMemRef.current[slot] = norm
-      try { localStorage.setItem(`mc-webpreview-applied:${slot}`, norm) } catch { /* ignore */ }
+      safeSetItem(`mc-webpreview-applied:${slot}`, norm)
       // Loopback-only (enforced inside setSessionPreviewPending): a rejected
       // (non-loopback) marker feeds nothing — and must not open the tab either.
       if (!setSessionPreviewPending(slot, norm)) return
@@ -3903,10 +3903,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!autoOpenGitPanelKnown) return
     const key = `mc-git-panel-opened:${activeSlot}:${_slotProject}`
     if (localStorage.getItem(key)) return
-    // If the marker cannot be persisted (quota), skip the auto-open entirely:
-    // opening changes tabsCtl, which re-runs this effect, and an absent marker
-    // would make it open again forever.
-    try { localStorage.setItem(key, '1') } catch { return }
+    // If the marker cannot be persisted, skip the auto-open entirely: opening
+    // changes tabsCtl, which re-runs this effect, and an absent marker would
+    // make it open again forever. safeSetItem reports whether the write landed
+    // (after reclaiming a disposable tier if the quota was full), so the guard
+    // is the return value rather than a caught throw.
+    if (!safeSetItem(key, '1')) return
     tabsCtl.openView('git')
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])

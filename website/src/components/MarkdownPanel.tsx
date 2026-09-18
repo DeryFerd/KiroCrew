@@ -1,4 +1,4 @@
-import { safeSetItem } from '../utils/safeStorage'
+import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
 import { hasCommandModifier } from '../utils/commandModifier'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
@@ -1526,7 +1526,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       }
       const raw = JSON.stringify(slots)
       composerDraftMemory.set(key, raw)
-      try { window.sessionStorage.setItem(key, raw) } catch { /* quota / unavailable: the memory copy stands */ }
+      // The write goes through the helper so a full or denied store can never
+      // raise on the render path; the in-memory copy above is what actually
+      // serves this tab, so a dropped mirror degrades exactly as before.
+      safeSetSessionItem(key, raw)
     }
     return {
       read: (anchor: string, start: number): string | null => load()[slotKey(anchor, start)] ?? null,

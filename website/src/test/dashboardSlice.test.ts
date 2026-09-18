@@ -249,6 +249,51 @@ describe('dashboardSlice', () => {
       const state = reducer(initial, markSlotRead('nonexistent'))
       expect(state.unreadSlots).toEqual([])
     })
+
+    // The shared unread record is written by an ordinary arrival, and that write
+    // is on the websocket `onmessage` -> Redux dispatch -> re-render path. A
+    // QuotaExceededError raised there is swallowed by the surrounding try/catch,
+    // so the record is silently lost while megabytes of re-derivable cache sit
+    // next to it. `safeSetItem` reclaims a disposable tier and retries; the raw
+    // write does not. This pins the reclaim so the record survives a full quota.
+    it('markSlotUnread reclaims disposable cache and still persists when the quota is full', () => {
+      const quota = () => {
+        const e = new DOMException('quota', 'QuotaExceededError')
+        Object.defineProperty(e, 'code', { value: 22, configurable: true })
+        return e
+      }
+      // Disposable cache the reclaim tiers are allowed to drop.
+      localStorage.setItem('vc_heights_session-A', '{"a":1}')
+      localStorage.setItem('keep-me', 'important')
+
+      const real = Storage.prototype.setItem
+      const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        // Fail only while the reclaimable cache is still present, so a retry
+        // after reclaim succeeds and a non-reclaiming writer never does.
+        if (this.getItem('vc_heights_session-A') !== null && !key.startsWith('vc_heights_')) {
+          throw quota()
+        }
+        real.call(this, key, value)
+      })
+
+      try {
+        reducer(initial, markSlotUnread({ slot: 'chat-1', ts: '2026-01-01T00:00:00Z' }))
+      } finally {
+        spy.mockRestore()
+      }
+
+      // The shared record survived because the write reclaimed space first.
+      expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toEqual({
+        'chat-1': '2026-01-01T00:00:00Z',
+      })
+      // Disposable cache was the thing sacrificed, not the record.
+      expect(localStorage.getItem('vc_heights_session-A')).toBeNull()
+      expect(localStorage.getItem('keep-me')).toBe('important')
+    })
   })
 
   describe('selectUnreadByMode', () => {

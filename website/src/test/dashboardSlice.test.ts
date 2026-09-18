@@ -294,6 +294,56 @@ describe('dashboardSlice', () => {
       expect(localStorage.getItem('vc_heights_session-A')).toBeNull()
       expect(localStorage.getItem('keep-me')).toBe('important')
     })
+
+    // `mc-unread-slots` is a PROJECTION of the shared record's keys, so the two
+    // must not disagree. The projection is strictly smaller than the record
+    // (keys only, no timestamps), so writing it can free space and succeed on a
+    // quota where the record's own write just failed. The old code could not
+    // reach that state: the raw setItem THREW, the surrounding catch swallowed
+    // it, and the projection line never ran. A helper that reports failure by
+    // return value instead of throwing silently removed that protection, which
+    // is the whole risk of converting a throwing call in a try/catch body.
+    it('leaves the projection alone when the shared record write fails', () => {
+      const quota = () => {
+        const e = new DOMException('quota', 'QuotaExceededError')
+        Object.defineProperty(e, 'code', { value: 22, configurable: true })
+        return e
+      }
+      // This file has no storage-clearing beforeEach, so start from a known
+      // state rather than whatever the previous case left behind.
+      localStorage.clear()
+      // A stale, larger projection than the one this dispatch would write, so a
+      // projection write would shrink it and find room.
+      localStorage.setItem('mc-unread-slots', JSON.stringify(['chat-1', 'chat-2', 'chat-3']))
+
+      const real = Storage.prototype.setItem
+      const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        // The authoritative record cannot be written; the projection still can.
+        if (key === 'mc-unread-shared') throw quota()
+        real.call(this, key, value)
+      })
+
+      try {
+        reducer(initial, markSlotUnread({ slot: 'chat-1', ts: '2026-01-01T00:00:00Z' }))
+      } finally {
+        spy.mockRestore()
+      }
+
+      // The record did not land, so the projection must not have been advanced
+      // past it. Two persisted records that disagree is worse than neither
+      // being written: `restoreUnreadSince` trusts the record while older tabs
+      // and the hub relay read the projection.
+      expect(localStorage.getItem('mc-unread-shared')).toBeNull()
+      expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toEqual([
+        'chat-1',
+        'chat-2',
+        'chat-3',
+      ])
+    })
   })
 
   describe('selectUnreadByMode', () => {

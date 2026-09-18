@@ -174,7 +174,17 @@ const persistSharedUnread = (add: Record<string, string>, remove: readonly strin
     // would escape a React ErrorBoundary and white-screen the app. The helper
     // reclaims a disposable tier and retries, so the record survives a full
     // quota instead of being dropped beside reclaimable cache.
-    safeSetItem('mc-unread-shared', JSON.stringify(stored))
+    //
+    // The return value is load-bearing, and it is the one thing a plain
+    // conversion from the old raw call loses. The raw setItem THREW on a full
+    // quota, so the surrounding catch swallowed it and the projection write
+    // below never ran. A helper that reports the same failure by returning
+    // false does not stop the function, and the projection is strictly smaller
+    // than the record (keys only, no timestamps) — so on a quota it can free
+    // space and succeed where the record just failed, leaving the two persisted
+    // records disagreeing. restoreUnreadSince trusts the record; older tabs and
+    // the hub relay read the projection. Bail out before that can happen.
+    if (!safeSetItem('mc-unread-shared', JSON.stringify(stored))) return
     // Projection write bypasses safeSet's hub relay: the shared keys omit
     // this window's manual sentinels, so relaying their count would under-
     // report the hub switcher chip. The reducers relay the window's own

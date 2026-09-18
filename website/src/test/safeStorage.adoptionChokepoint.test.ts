@@ -23,8 +23,9 @@ import { join, relative } from 'node:path'
  * here. Reads and `removeItem` are out of scope — this is about the write that
  * throws.
  *
- * Exemption: a line carrying `// raw-storage-ok: <why>` opts out visibly, so the
- * decision shows up in the diff instead of being an omission nobody sees.
+ * There is no exemption marker. Every file in scope writes through the helper
+ * today, so an escape hatch would be a convention with no consumer; if a
+ * genuine exemption ever appears, it can add one alongside its reason.
  */
 
 const SRC = join(process.cwd(), 'src')
@@ -48,7 +49,6 @@ function sourceFiles(dir: string): string[] {
 const IMPORTS_HELPER = /from\s+['"][^'"]*safeStorage['"]/
 /** A raw write to Web Storage. `window.`/`globalThis.` prefixes are matched. */
 const RAW_WRITE = /(?:window\.|globalThis\.)?(?:local|session)Storage\.setItem\(/
-const EXEMPT = /\/\/\s*raw-storage-ok:\s*\S/
 
 describe('safeStorage importers write through safeStorage', () => {
   const files = sourceFiles(SRC)
@@ -72,7 +72,7 @@ describe('safeStorage importers write through safeStorage', () => {
       const text = readFileSync(file, 'utf8')
       if (!IMPORTS_HELPER.test(text)) continue
       text.split('\n').forEach((line, i) => {
-        if (RAW_WRITE.test(line) && !EXEMPT.test(line)) {
+        if (RAW_WRITE.test(line)) {
           offenders.push(`${relative(process.cwd(), file)}:${i + 1}: ${line.trim()}`)
         }
       })

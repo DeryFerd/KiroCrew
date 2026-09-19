@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.driver import resolve_transport_approval_mode
 from kiro_crew.messaging.spawn_approval_delivery import (
     register_channel_delivery,
     unregister_channel_delivery,
@@ -34,16 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
-    """Resolve the transport approval mode (mirrors the Slack path, neutral).
-
-    YOLO -> auto-approve; otherwise the CLI ``--approval`` override or the
-    configured ``agent.approval_mode`` decides, collapsing anything that isn't
-    ``auto`` to interactive (deny-by-default unless a decider/hook approves).
-    """
-    if getattr(orch, "_approval_mode", None) == "yolo":
-        return APPROVAL_AUTO
-    mode = getattr(orch, "_approval_mode", None) or orch._cfg.agent.approval_mode
-    return APPROVAL_AUTO if mode == APPROVAL_AUTO else APPROVAL_INTERACTIVE
+    """This transport's approval mode, resolved by the shared channel helper."""
+    return resolve_transport_approval_mode(orch)
 
 
 async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient | None":

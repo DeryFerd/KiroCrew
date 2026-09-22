@@ -626,6 +626,17 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
     dropped job is gone; a paused one is fully restored and simply waiting to be
     switched on. Rewrites *crons_path* in place. A missing file is left alone.
 
+    The store is read and written as UTF-8, never through the locale codepage.
+    Cron job names are operator-authored text and routinely non-ASCII — the same
+    reason ``snapshot._merge_crons``, which merges this very file a few lines
+    later in ``apply_import_zip``, pins ``encoding="utf-8"`` on both ends. A bare
+    ``read_text()`` here decodes the archive's UTF-8 with the host codepage, and
+    both outcomes are wrong: a codepage that cannot decode the bytes raises
+    ``UnicodeDecodeError``, which IS a ``ValueError`` and therefore lands in the
+    recovery arm below — replacing a perfectly good backup with an empty store
+    and reporting it as unreadable — while a codepage that decodes most bytes
+    (cp1252) yields mojibake that the rewrite below then persists to disk.
+
     Three rules, each closing a different way an archive can act on the host:
 
     1. A job that is not an object, or whose ``schedule`` is not one, is DROPPED.
@@ -654,12 +665,12 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
     if not crons_path.is_file():
         return [], []
     try:
-        data = json.loads(crons_path.read_text())
+        data = json.loads(crons_path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         # Unparseable bytes are not installable as a cron store either, but they
         # are also not something this function can reason about — an empty store
         # is the only safe thing to hand the loader.
-        crons_path.write_text(json.dumps({"jobs": []}, indent=2))
+        crons_path.write_text(json.dumps({"jobs": []}, indent=2), encoding="utf-8")
         return [_UNREADABLE_STORE], []
     # A store whose top level is not an object, or whose `jobs` is not a list, is
     # REPLACED rather than left alone. `CronService._load` treats such a document
@@ -667,7 +678,7 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
     # user is TOLD the store was unreadable at import time, instead of the
     # gateway silently starting with an empty schedule later.
     if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
-        crons_path.write_text(json.dumps({"jobs": []}, indent=2))
+        crons_path.write_text(json.dumps({"jobs": []}, indent=2), encoding="utf-8")
         return [_UNREADABLE_STORE], []
     jobs = data["jobs"]
 
@@ -733,7 +744,7 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
 
     if changed:
         data["jobs"] = kept
-        crons_path.write_text(json.dumps(data, indent=2))
+        crons_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return dropped, paused
 
 

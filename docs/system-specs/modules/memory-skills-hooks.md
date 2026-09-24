@@ -4730,6 +4730,80 @@ User-defined kiro-cli hooks that persist across `kirocrew update`. Follows the
 {"agent": {"kiro_hooks": {"preToolUse": [{"matcher": "*", "command": "/path/to/hook.sh"}]}}}
 ```
 
+**Two accepted shapes.** The object above, and the array of hook documents a
+kiro-agent profile carries:
+
+```json
+{"agent": {"kiro_hooks": [
+  {"name": "guard", "trigger": "PreToolUse", "matcher": "*",
+   "action": {"type": "command", "command": "/path/to/hook.sh"}}
+]}}
+```
+
+Each shape has exactly one reader. `normalize_spec_hooks()` in `agent.py` reads
+the array and returns the internal list of hook documents, and
+`hook_documents_to_object_form()` derives the object form handed to kiro-cli. The
+object form is read only by `_merge_kiro_hooks()`, which owns its validation and
+its audit, so its serialized bytes and its error path are unchanged by the array
+form's arrival — re-deriving it from documents would move both. Anything that is
+not an array, an object included, is warned about and SEL-audited by
+`normalize_spec_hooks()`, and the one caller sends an object straight to the
+merge instead of here. So a value that is neither shape is audited rather than
+dropped in silence. The standalone hook-file wrapper
+`{"version": "v1", "hooks": [...]}` is a file format, not a spec value: it is an
+object, so the merge sees `version`/`hooks` as unknown event keys and rejects it.
+
+Array-form rules (implemented in `normalize_spec_hooks()`):
+- `trigger` accepts the whole alias table from the trigger alias table in `kiro-team/kiro-agent` (blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, `trigger-names.ts` under its hooks package) — twelve canonical triggers with their PascalCase identity rows, the IDE's
+  legacy camelCase spellings, the CLI aliases and one Open Plugins legacy alias —
+  keyed case-insensitively, which is one deliberate leniency over kiro-agent's
+  own case-sensitive lookup. That blob is the version to re-read when adding a
+  name
+- `action` is `{"type": "command", "command": ...}` or
+  `{"type": "agent", "prompt": ...}`; the type must be a string and the payload a
+  non-empty string within `_MAX_HOOK_PAYLOAD_LEN`
+- `name` and `description` are bounded by `_MAX_HOOK_NAME_LEN` and
+  `_MAX_HOOK_DESCRIPTION_LEN`, `timeout` must be a positive integer, `enabled` and
+  `confirm` must be booleans, and `matcher` follows the object form's rules
+- at most `_MAX_SPEC_HOOK_DOCUMENTS` documents are read from one field
+- a rejected document is warned about and SEL-audited; the documents beside it
+  still load
+- documents are then projected onto the object form and merged by
+  `_merge_kiro_hooks()`, so both shapes meet the same command, matcher, dedup and
+  cap rules
+
+Left out of the kiro-cli emission, kept in the stored spec — and left out for
+that TRIGGER only, since autoimport still discovers a script in the hooks
+directory on its own unless a suppressed document names it: an `action` of type
+`agent`, the seven triggers kiro-cli has no event name for (`SessionEnd`, `PreTaskExec`,
+`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`), and
+the per-hook `name`, `description` and `timeout`. `enabled: false` and
+`confirm: true` are NOT in that class: each grants less execution than the object
+form can express, so either one keeps the hook out of the kiro-cli spec entirely,
+with a log line and a SEL audit naming which. `hook_documents_suppressed_commands()`
+maps the resolved command of every entry carrying those two fields to the CAUSE the
+audit line reports — read from the RAW array, before validation, so a document that
+says `enabled: false` and is then rejected for an unrelated field still keeps its
+script out of the scan. One filter serves both causes, so the cause travels with the
+command rather than being assumed: a confirmation-gated hook is not recorded as one
+the author disabled, and `enabled: false` outranks `confirm: true` on one document
+and across two naming the same command. Bypassing the validator means carrying its
+bounds: the same `_MAX_SPEC_HOOK_DOCUMENTS` slice, so a document the log calls
+ignored cannot still delete a script, and `_MAX_HOOK_PAYLOAD_LEN` on the retained
+command. On Windows, a UNC or device-shaped command outside the shares
+`unc_probe_allowed()` admits is refused before THIS resolution, because
+`Path.resolve()` on one is an outbound SMB authentication; the shape is judged on the
+authored string and on its user-expanded form. `_validate_hook_command()` does not
+ask: the object form has always resolved its command there and autoimport hands it a
+path already resolved, so a refusal there would prevent no probe while un-installing
+every hook on a host whose hooks directory lives on a share. Each script left out of
+the scan is SEL-audited, because an off-document that validation rejected never
+reaches the emission path's own audit — and
+`_apply_user_kiro_hooks()` subtracts them from what autoimport discovered before
+the single merge pass — otherwise a document naming a script under
+`~/.kiro/hooks` is dropped here and rediscovered there, landing on autoimport's
+default event rather than the one the document named.
+
 Merge rules (implemented in `_merge_kiro_hooks()` in `agent.py`):
 - Bundled hooks from `config/defaults.json` are always present and always first
 - User hooks are appended per event type after bundled hooks

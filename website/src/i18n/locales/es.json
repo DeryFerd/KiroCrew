@@ -6668,6 +6668,7 @@
       "yes_move_it": "Mover"
     },
     "followUpBar": {
+      "plan_action_failed": "No se pudo enviar esa acción del plan.",
       "click_to_add_to_input_double_click_to_select_and": "Clic para añadir a la entrada (doble clic para seleccionar y enviar)",
       "click_to_add_to_input_editable_before_sending": "Clic para añadir a la entrada (editable antes de enviar)",
       "tooltip_arrow_sends_now": "↑ envía ahora",

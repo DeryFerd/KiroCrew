@@ -1747,6 +1747,9 @@ export default function ChatPane({
           followUpLayout={chatConfig.followUpLayout}
           quickSend={dashCfg?.quick_send}
           followUpSourceKey={followUpSourceKey}
+          followUpPendingOptions={planActionMutation.latchedActions}
+          followUpRefusedOptions={new Set(followUpOptions.filter(planActionMutation.isRefused))}
+          followUpError={planActionMutation.failure}
           onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
             // Mirrors ChatPage's wiring, plan branch included (#5893). Plan
             // options (Go / Go All / Cancel — the only labels the plan

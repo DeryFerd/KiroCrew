@@ -6668,6 +6668,7 @@
       "yes_move_it": "Sposta"
     },
     "followUpBar": {
+      "plan_action_failed": "Impossibile inviare questa azione del piano.",
       "click_to_add_to_input_double_click_to_select_and": "Clicca per aggiungere all'input (doppio clic per selezionare e inviare)",
       "click_to_add_to_input_editable_before_sending": "Clicca per aggiungere all'input (modificabile prima dell'invio)",
       "tooltip_arrow_sends_now": "↑ invia subito",

@@ -6464,6 +6464,7 @@
       "yes_move_it": "이동"
     },
     "followUpBar": {
+      "plan_action_failed": "해당 플랜 작업을 보낼 수 없습니다.",
       "click_to_add_to_input_double_click_to_select_and": "클릭하여 입력에 추가 (더블클릭하면 선택 후 전송)",
       "click_to_add_to_input_editable_before_sending": "클릭하여 입력에 추가 (전송 전에 수정 가능)",
       "tooltip_arrow_sends_now": "↑ 지금 전송",

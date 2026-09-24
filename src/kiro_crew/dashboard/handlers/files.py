@@ -87,7 +87,9 @@ from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.pdf_extract import PdfExtraction, extract_pdf_segments
+from kiro_crew.platform import binary_content_is_flagged
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.platform import wide_content_is_flagged
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -446,8 +448,9 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             error="file_not_found_or_access_denied",
         )
         return web.json_response({"error": "File not found or access denied"}, status=404)
-    # Text files: check for sensitive content. Binary files: skip content scan
-    # and validate MIME against the shared BINARY_MIME_ALLOWLIST.
+    # Content is scanned whichever way it decodes: UTF-8 text below, non-UTF-8
+    # bytes through the shared ``binary_content_is_flagged``. Binary must also
+    # carry an allow-listed MIME type.
     try:
         text = raw.decode("utf-8")
         # The owner's grant covers this leg: the card renders in the owner's own
@@ -455,8 +458,20 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         # already recorded by the tool leg, and the byte handover is recorded by
         # the download route; a third entry for rendering a card would only bury
         # the two that answer a real question.
-        if redact(text) != text and not file_delivery_consent.is_granted(
-            file_delivery_consent.CLASS_OWNER_DASHBOARD
+        #
+        # The store read goes through a thread: ``is_granted`` ends in a
+        # synchronous file read, and a coroutine that waits on storage stalls the
+        # whole gateway. Ordered after the scan so a clean file never reads it.
+        #
+        # The wide pass runs here as well as on the binary branch below: a
+        # credential written at UTF-16/UTF-32 spacing is NUL-interleaved ASCII,
+        # which is valid UTF-8, so it decodes cleanly into this branch and the
+        # contiguous-ASCII detectors in ``redact`` match none of it.
+        flagged = redact(text) != text or await asyncio.to_thread(
+            wide_content_is_flagged, raw
+        )
+        if flagged and not await asyncio.to_thread(
+            file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
         ):
             _sel().log_tool_invocation(
                 session_key="api",
@@ -481,6 +496,28 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
             )
             return web.json_response(
                 {"error": f"Binary file type not allowed: {guessed_type or 'unknown'}"}, status=400
+            )
+        # An allow-listed media type is a container, not a guarantee about its
+        # contents, so the same grant decides here as on the text branch above.
+        # Off the event loop: the scan is CPU work over up to the read cap, and a
+        # media file is routinely orders of magnitude larger than a text one.
+        if await asyncio.to_thread(binary_content_is_flagged, raw) and not await asyncio.to_thread(
+            file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
+        ):
+            _sel().log_tool_invocation(
+                session_key="api",
+                source="api",
+                tool_name="file_send",
+                tool_kind="notify",
+                outcome="denied",
+                error="binary_credential_detected",
+            )
+            return web.json_response(
+                {
+                    "error": "binary file contains embedded credentials",
+                    "code": "binary_credential_detected",
+                },
+                status=400,
             )
     # Inject the file card into the caller's chat slot so it persists in the
     # correct session. This runs even when ``state._slots`` is empty: a headless
@@ -629,63 +666,92 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
             error=f"safe_read_file_bytes rejected: {filename}",
         )
         return web.json_response({"error": "forbidden"}, status=403)
-    # For text files, scan for sensitive content; binary files served as-is
-    # against the shared BINARY_MIME_ALLOWLIST (deny-by-default).
+    # Content is scanned whichever way it decodes: UTF-8 text here, non-UTF-8
+    # bytes once the MIME allow-list below has admitted the type.
     is_text = True
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         is_text = False
-    if is_text:
-        redacted = redact(text)
-        if redacted != text:
-            # This is where the flagged bytes actually leave for the owner's
-            # browser, so a grant is honoured here AND the handover is audited --
-            # the refusal it replaces was self-evident in the 400, whereas a
-            # successful consented download would otherwise leave no trace.
-            #
-            # TWO conjuncts, and the second is not redundant. This route is absent
-            # from every ``token_auth`` bypass list, which establishes that it needs
-            # AUTHENTICATION -- not that it needs OWNER IDENTITY. A Slack
-            # allow-listed non-owner running ``!dashboard`` authenticates with
-            # ``app == ""`` and ``sub != owner_id``, so ordinary token auth admits
-            # them while ``is_owner_dashboard_request`` does not. Without the owner
-            # conjunct the grant would convert a clean 400-for-everyone into raw
-            # bytes for every authenticated caller -- widening the audience as a
-            # side effect of a control meant to narrow it, and contradicting the
-            # "owner's own authenticated browser" audience this class is scoped to.
-            from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
-                is_owner_dashboard_request,
-            )
 
-            if not (
-                file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD)
-                and is_owner_dashboard_request(request)
-            ):
+    def _grant_permits_this_handover(granted: bool) -> bool:
+        """Whether the owner's recorded grant releases flagged bytes to THIS caller.
+
+        This is where the flagged bytes actually leave for the owner's browser, so
+        a grant is honoured here AND the handover is audited -- the refusal it
+        replaces was self-evident in the 400, whereas a successful consented
+        download would otherwise leave no trace.
+
+        *granted* arrives already resolved because reading it ends in a
+        synchronous store read, and this closure is called from a coroutine: each
+        caller resolves the grant with ``asyncio.to_thread`` inside its own
+        flagged-content branch, which keeps the read off the gateway event loop
+        and keeps a clean file from touching the store at all. What stays here is
+        the in-memory half of the test.
+
+        TWO conjuncts, and the second is not redundant. This route is absent from
+        every ``token_auth`` bypass list, which establishes that it needs
+        AUTHENTICATION -- not that it needs OWNER IDENTITY. A Slack allow-listed
+        non-owner running ``!dashboard`` authenticates with ``app == ""`` and
+        ``sub != owner_id``, so ordinary token auth admits them while
+        ``is_owner_dashboard_request`` does not. Without the owner conjunct the
+        grant would convert a clean 400-for-everyone into raw bytes for every
+        authenticated caller -- widening the audience as a side effect of a control
+        meant to narrow it, and contradicting the "owner's own authenticated
+        browser" audience this class is scoped to.
+
+        One function for both content kinds on purpose: a text file and a media
+        file carrying the same credential reach the same audience through this
+        route, so a second copy of the test is a second thing to forget.
+        """
+        from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
+            is_owner_dashboard_request,
+        )
+
+        return granted and is_owner_dashboard_request(request)
+
+    def _audit_consented_handover() -> None:
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="file_send",
+            tool_kind="download",
+            outcome="completed",
+            error="sensitive_content_delivered_with_consent",
+        )
+        file_delivery_consent.audit_decision(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD,
+            outcome="delivered",
+            detail=f"download: {path.name}",
+        )
+
+    if is_text:
+        # Two passes on this branch, not one. ``redact`` reads the correctly
+        # decoded text, which is the more accurate read of it; the wide pass reads
+        # the raw bytes, because a credential at UTF-16/UTF-32 spacing is
+        # NUL-interleaved ASCII, decodes as valid UTF-8 into this very branch, and
+        # arrives with its characters separated so no contiguous-ASCII detector
+        # matches. Short-circuited, so a file the text pass already flags pays no
+        # second scan.
+        redacted = redact(text)
+        narrow_flagged = redacted != text
+        if narrow_flagged or await asyncio.to_thread(wide_content_is_flagged, raw):
+            granted = await asyncio.to_thread(
+                file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
+            )
+            if not _grant_permits_this_handover(granted):
                 _sel().log_tool_invocation(
                     session_key="api",
                     source="api",
                     tool_name="file_send",
                     tool_kind="download",
                     outcome="denied",
-                    error="content_redacted",
+                    error="content_redacted" if narrow_flagged else "wide_credential_detected",
                 )
                 return web.json_response(
                     {"error": "file content was redacted; download aborted"}, status=400
                 )
-            _sel().log_tool_invocation(
-                session_key="api",
-                source="api",
-                tool_name="file_send",
-                tool_kind="download",
-                outcome="completed",
-                error="sensitive_content_delivered_with_consent",
-            )
-            file_delivery_consent.audit_decision(
-                file_delivery_consent.CLASS_OWNER_DASHBOARD,
-                outcome="delivered",
-                detail=f"download: {path.name}",
-            )
+            _audit_consented_handover()
     safe_name = urllib.parse.quote(path.name, safe="")
     content_type, _ = mimetypes.guess_type(path.name)
     if not content_type:
@@ -703,6 +769,33 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         return web.json_response(
             {"error": f"Binary file type not allowed: {content_type}"}, status=403
         )
+    if not is_text:
+        # An allow-listed media type says the browser can render these bytes
+        # safely, not that a credential cannot be sitting inside them. Scanned
+        # after the allow-list so a type this route refuses outright is never
+        # scanned, and off the event loop because the scan is CPU work over up to
+        # the read cap and a media file is routinely far larger than a text one.
+        if await asyncio.to_thread(binary_content_is_flagged, raw):
+            granted = await asyncio.to_thread(
+                file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
+            )
+            if not _grant_permits_this_handover(granted):
+                _sel().log_tool_invocation(
+                    session_key="api",
+                    source="api",
+                    tool_name="file_send",
+                    tool_kind="download",
+                    outcome="denied",
+                    error="binary_credential_detected",
+                )
+                return web.json_response(
+                    {
+                        "error": "binary file contains embedded credentials; download aborted",
+                        "code": "binary_credential_detected",
+                    },
+                    status=400,
+                )
+            _audit_consented_handover()
     # Inline disposition for media types the browser can render
     disposition = "inline" if any(content_type.startswith(t) for t in _INLINE_DISPOSITION_PREFIXES) else "attachment"
     # SVG can contain scripts — never serve inline on the dashboard origin
@@ -873,9 +966,13 @@ def _gate_upload_file(
                 None,
             )
         text = None  # signal: skip text redaction path
-        # Scan binary content for embedded credentials (e.g. base64-encoded keys in PDFs)
-        binary_text = raw.decode("latin-1")
-        if redact(binary_text) != binary_text:
+        # An allow-listed media type is a container, not a guarantee about its
+        # contents: base64 key material inside a PDF is the case this catches.
+        # Unconditional on this leg. The owner-facing gates weigh a recorded
+        # owner decision against a positive result; this leg has a third-party
+        # audience and so has nothing to weigh, which is why it reads no store at
+        # all -- a property asserted on this function's own source.
+        if binary_content_is_flagged(raw):
             _audit_denial("binary_credential_detected")
             return (
                 web.json_response(
@@ -898,6 +995,24 @@ def _gate_upload_file(
                         {
                             "error": "file content was redacted; upload aborted",
                             "code": "content_redacted",
+                        },
+                        status=400,
+                    ),
+                    None,
+                    None,
+                )
+            # Wide-encoded credentials reach this branch rather than the binary one
+            # above: NUL-interleaved ASCII is valid UTF-8, so the decode succeeds
+            # and ``redact`` sees characters separated by NUL, which matches no
+            # detector. Unconditional here for the same reason the binary scan is:
+            # this leg has a third-party audience and no owner grant to weigh.
+            if wide_content_is_flagged(raw):
+                _audit_denial("wide_credential_detected")
+                return (
+                    web.json_response(
+                        {
+                            "error": "file contains embedded credentials",
+                            "code": "wide_credential_detected",
                         },
                         status=400,
                     ),
@@ -5834,7 +5949,25 @@ async def api_file_diff(request: web.Request) -> web.Response:
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, UnicodeDecodeError):
             return {"diff": "", "original": "", "status": "error"}
 
-    result = await asyncio.to_thread(_run)
+    def _run_redacted() -> dict:
+        # Both text fields carry file content, so they pass through the same
+        # redactor ``api_file_read`` applies to the panel's buffer. The panel's
+        # diff view compares that redacted buffer against this ``original``, so
+        # leaving one side raw makes an unchanged credential line render as a
+        # hunk, and serves a secret committed in HEAD that ``/api/file-read``
+        # masks. Redacting the assembled result covers every branch, including
+        # ones added later, and runs in this worker thread rather than on the
+        # event loop because the input is caller-sized.
+        result = _run()
+        # Deliberately NOT truncated first: slicing before the pass can cut a
+        # credential's regex-required tail, and the surviving prefix is then
+        # served as real bytes. Redacting whole text costs an unbounded scan,
+        # which is why it runs here rather than on the event loop.
+        result["original"] = redact(result.get("original", ""))
+        result["diff"] = redact(result.get("diff", ""))
+        return result
+
+    result = await asyncio.to_thread(_run_redacted)
     _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources=f"path={raw_path}")
     return web.json_response(result)
 

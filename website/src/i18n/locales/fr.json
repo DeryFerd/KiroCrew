@@ -6668,6 +6668,7 @@
       "yes_move_it": "Déplacer"
     },
     "followUpBar": {
+      "plan_action_failed": "Impossible d'envoyer cette action de plan.",
       "click_to_add_to_input_double_click_to_select_and": "Clique pour ajouter à la saisie (double-clic pour sélectionner et envoyer)",
       "click_to_add_to_input_editable_before_sending": "Clique pour ajouter à la saisie (modifiable avant l’envoi)",
       "tooltip_arrow_sends_now": "↑ envoie maintenant",

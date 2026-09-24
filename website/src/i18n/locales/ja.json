@@ -6464,6 +6464,7 @@
       "yes_move_it": "移動"
     },
     "followUpBar": {
+      "plan_action_failed": "そのプランアクションを送信できませんでした。",
       "click_to_add_to_input_double_click_to_select_and": "クリックして入力に追加（ダブルクリックして選択して送信）",
       "click_to_add_to_input_editable_before_sending": "クリックして入力に追加（送信前に編集可能）",
       "tooltip_arrow_sends_now": "↑ は今すぐ送信",

@@ -6770,6 +6770,7 @@
       "yes_move_it": "Переместить"
     },
     "followUpBar": {
+      "plan_action_failed": "Не удалось отправить это действие плана.",
       "click_to_add_to_input_double_click_to_select_and": "Нажми, чтобы добавить в поле ввода (двойное нажатие — выбрать и отправить)",
       "click_to_add_to_input_editable_before_sending": "Нажми, чтобы добавить в поле ввода (можно изменить перед отправкой)",
       "tooltip_arrow_sends_now": "↑ отправляет сразу",

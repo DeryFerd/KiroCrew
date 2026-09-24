@@ -6464,6 +6464,7 @@
       "yes_move_it": "移动"
     },
     "followUpBar": {
+      "plan_action_failed": "无法发送该计划操作。",
       "click_to_add_to_input_double_click_to_select_and": "点击添加到输入框（双击以选择并发送）",
       "click_to_add_to_input_editable_before_sending": "点击添加到输入框（发送前可编辑）",
       "tooltip_arrow_sends_now": "↑ 立即发送",

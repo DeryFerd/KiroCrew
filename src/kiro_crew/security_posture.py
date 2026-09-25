@@ -876,7 +876,9 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Outbound raster payloads",
         "messaging/outbound_files.py",
-        "Exact raster bytes pass both credential and exfiltration-URL scanners " "before upload.",
+        "Exact raster bytes go through platform.binary_content_is_flagged -- the "
+        "one binary-content scan every file-delivery gate shares -- before upload, "
+        "so this leg and those gates give one answer to one question.",
     ),
     (
         "Slack member-memory refusal",

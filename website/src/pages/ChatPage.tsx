@@ -4134,7 +4134,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // no settings route at all, so on both surfaces the affordance is omitted
   // rather than pointed at a page that does not carry the setting.
   const openDefaultModelSetting = useCallback(() => {
-    navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))
+    navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: SETTINGS_DEFAULT_MODEL_ID }))
   }, [navigate])
   // The Kiro sign-in card (an `auth_required` error row's fix) lives on the
   // full dashboard's Developer > Agent Backend tab, under the switch that
@@ -7967,11 +7967,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 effortLevelsOverride={remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined}
                 onManageModels={modelPickerConfigured ? undefined : () => {
                   setModelDropdown(false)
-                  navigate(settingsPath({ tab: 'chat', highlight: 'key:dashboard.model_picker_hidden_models' }))
+                  navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: 'key:dashboard.model_picker_hidden_models' }))
                 }}
                 onSetDefault={() => {
                   setModelDropdown(false)
-                  navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))
+                  navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: SETTINGS_DEFAULT_MODEL_ID }))
                 }}
                 agentName={_modelPinAgent}
                 pinModelName={_modelPinActive || 'auto'}

@@ -932,12 +932,16 @@ against sweep completeness, and are torn down at `close_all`.
   without it, absence from the live set is equally true of a `cron:` fire, a
   `taskrunner:{id}:task{n}` step or a `hook:` session that is running right now
   and never had a tab, so reaping on absence alone would end live work instead
-  of finished work. Two further guards apply to this axis only, and the probe
-  call one of them makes carries a third question the RSS recycle shares. It
-  consults the
+  of finished work. One further guard applies to this axis only, the live-set
+  re-assert below; the sub-agent probe is asked on BOTH axes, and the call
+  carries a third question the RSS recycle shares. The sweep consults the
   same `CleanupDeps.has_attached_subagents` probe the RSS recycle uses,
   fail-closed, because with session sharing on a parent's children run on its
-  runtime after its own turn ends and the busy semaphore cannot see them. That
+  runtime after its own turn ends and the busy semaphore cannot see them. The
+  idle clock reaches that probe as well as the orphan test does: a long
+  sub-agent run is exactly what lets a parent's `last_used` go stale, and an
+  idle expiry that skipped the probe would fire `on_session_expire` and reset
+  the runtime the children are still working on. That
   same wrapper answers a second question FIRST, and synchronously: whether a
   completion injection is in flight for the key
   (`CleanupDeps.has_pending_injection`, installed by the gateway over its
@@ -955,12 +959,26 @@ against sweep completeness, and are torn down at `close_all`.
   branches honour it: the axis that elected a session says nothing about whether
   a turn is committed to it, and the clock alone can elect a never-tabbed
   `cron:{job}` parent whose `last_used` went stale during the very sub-agent run
-  whose completion injection is in flight. For the idle branch that read is the
-  last one before its reset. The two branches that suspend on the sub-agent probe
-  -- the orphan branch and the RSS recycle -- read the counter ONCE MORE after
-  that probe, because it suspends and an injection starting inside its await is
-  invisible to any earlier read. On both, that re-read is the last statement
-  before `reset` and nothing between them suspends. Neither read is the atomic
+  whose completion injection is in flight. Every branch that resets suspends
+  on the sub-agent probe -- the sweep on both its axes and the RSS recycle --
+  so each reads the counter ONCE MORE after that probe, because an injection
+  starting inside its await is invisible to any earlier read. On the RSS
+  recycle that re-read is the last statement before `reset`. In the sweep it is
+  the first of four post-await re-judges, all synchronous and all asked about
+  the entry the scan carried out: the counter; then the incarnation, on both
+  axes (the key must still hold the session the sweep judged, because
+  `on_session_expire` consolidates the transcript ahead of `reset` and a
+  `reset` that declines on the mismatch afterwards does not undo a
+  consolidation already run over a newcomer's transcript -- and on the orphan
+  axis a departed incarnation loses its old slot-claim record only while the
+  key is still absent from the current live set; a reopened slot republishes a
+  fresh claim for its replacement, which the stale verdict must preserve);
+  then the semaphore (a turn that took it during the await is exactly as live
+  as one the scan skipped); then, on the idle axis only, the clock (a turn that
+  began AND finished inside the await released the semaphore again but bumped
+  `last_used` on its way in, so the session is not idle now -- the orphan axis
+  ignores the clock and re-asserts against the live set instead, below).
+  Nothing between the probe's return and `reset` suspends. Neither read is the atomic
   one, though: `reset` itself suspends on the registry lock before it validates
   anything, so an injection beginning while that lock is contended is invisible
   to every read a caller took first. Both resetters therefore pass
@@ -974,17 +992,19 @@ against sweep completeness, and are torn down at `close_all`.
   than exempting the key: once the counter returns to zero the next sweep expires
   it, so the runtime this axis exists to release is not held for good by a window
   that has closed.
-  Every verdict this sweep reaches is about ONE incarnation, so on this axis the
+  Every verdict this sweep reaches is about ONE incarnation, so on BOTH axes the
   reset is pinned to it: the scan carries the session object out with its key and
   passes it as `reset(expect_session=...)`, which revalidates identity under the
-  registry lock and declines on a mismatch. Two awaits separate the scan from the
-  act, so the key can change hands in between -- a cron job firing again, a tab
-  reopened and a turn taken -- and a key-only reset would hand that newcomer a
-  verdict reached about its predecessor. The record restore on a declined reset
+  registry lock and declines on a mismatch. The probe suspends on either axis,
+  and the orphan axis adds the scan's lock release ahead of it, so the key can
+  change hands before the act -- a cron job firing again, a tab reopened and a
+  turn taken -- and a key-only reset would hand that newcomer a verdict reached
+  about its predecessor; on the idle axis it would shut down exactly the
+  replacement runtime. The record restore on a declined reset
   is conditioned on the same identity, which covers both reasons for a decline:
   a session that is merely busy is the one whose claim was released, so the claim
   goes back, while a key that changed hands must not have a claim invented for
-  its new holder. The idle axis keeps its long-standing key-only reset. And
+  its new holder. On the orphan axis
   the answer is then re-asserted against the current live set. That re-assert
   must be the LAST read of the live set before `reset`, which is why it sits
   after the probe rather than before it: two awaits separate the scan from the
@@ -992,6 +1012,20 @@ against sweep completeness, and are torn down at `close_all`.
   reopen in either window. Everything between the re-assert and `reset` is
   synchronous by requirement, so a check placed any earlier reopens the window
   it exists to close and a session the user has just resumed loses its runtime.
+  Fail-closed has one accepted residual: a probe that cannot answer keeps every
+  candidate it is asked about, on the idle sweep, the orphan axis and the RSS
+  recycle alike, so a probe broken system-wide holds every reap until it
+  recovers. That is the right answer for the sessions -- reaping on a probe
+  that cannot see the children is the hazard the guard exists to prevent. When
+  the probe RAISES, its visibility is a WARNING bounded by
+  `SessionCleanup.PROBE_FAILURE_WARN_INTERVAL_SECS` (at most one line per
+  interval across all keys, `CleanupState.probe_failure_warned_at`), with every
+  failure keeping its traceback at debug, so a persistent break stays visible
+  in the log without a line per candidate per tick. An unreadable task store
+  does not raise to this wrapper: `subagents_attached_async` absorbs it and
+  answers "attached" (`taskq_bridge.UNKNOWN_PENDING`), so that cause surfaces
+  only as the per-key "still has sub-agent work - left running" INFO line, not
+  as the bounded WARNING.
   While no live set has been published at all
   (`active_dashboard_slots is None`) the axis expires nothing, so a build with
   no dashboard keeps the idle timer as its only reaper. The policy is

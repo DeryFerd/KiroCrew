@@ -78,11 +78,12 @@ Four mechanisms clean up processes. They are complementary — not redundant.
    slot-owned by construction; a key of any other shape counts as slot-owned
    only if a published live set once carried it, which is what keeps a
    ``cron:`` fire or a ``taskrunner:{id}:task{n}`` step that never had a tab
-   from being read as finished. That axis refuses a session with attached
-   sub-agent work, then re-asserts against the live set as the last read before
-   the reset, with no await in between. BOTH axes refuse a session with a
-   completion injection in flight: a turn already committed to a session is not
-   finished work, whichever test elected it. *Cannot be replaced by the idle clock* — a finished session holds its
+   from being read as finished. BOTH axes ask the sub-agent probe and refuse a
+   session with attached sub-agent work; only the orphan axis then re-asserts
+   against the live set as the last read before the reset, with no await in
+   between. BOTH axes also refuse a session with a completion injection in
+   flight: a turn already committed to a session is not finished work,
+   whichever test elected it. *Cannot be replaced by the idle clock* — a finished session holds its
    runtime and its per-session MCP servers for the whole timeout, so the live
    process count is the number of unreaped sessions times the servers each one
    spawns.

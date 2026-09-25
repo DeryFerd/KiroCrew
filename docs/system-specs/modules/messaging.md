@@ -516,13 +516,20 @@ the operator-log-vs-agent-error security split are documented in
 `DiscordDispatcher.deliver_spawn_approval` posts the existing Approve/Deny buttons
 and awaits the press through the same `on_interaction` `a:` path, registered in
 `discord/gateway.py` on startup and unregistered from the client's `on_close` hook.
-Three differences from the Telegram reference are load-bearing. Discord's ladder has
+Two differences from the Telegram reference are load-bearing. Discord's ladder has
 **no Trust rung**, so there is no in-channel way to grant standing spawn trust here —
-the operator grants it from the dashboard. A `unified` dm_scope collapses several
+the operator grants it from the dashboard. And a `unified` dm_scope collapses several
 peers into one session key, which names no single conversation, so such a key is
-unaddressable and falls through. And this client reports a refused send by
-**returning no message id** rather than by raising, so an absent id is read the same
-way as an exception: nothing was surfaced, fall through.
+unaddressable and falls through.
+
+**A send that fails without raising is a fall-through on both.** Each channel's
+client reports a refused send by **returning no message id** rather than by raising,
+so both gates read an absent id the same way as an exception: nothing was surfaced,
+retire the armed nonce and fall through. Reading only the exception leaves the gate
+awaiting a press on a prompt that does not exist, which spends the whole
+`APPROVAL_TIMEOUT_S` window and then hands that silence to the host gate as a deny —
+postponing the very surface, Slack or the dashboard, that could have answered at
+once.
 
 **The channels governance ceiling is the seam's gate, read once for every hook.**
 `spawn_approval_delivery` consults `channel_inbound_permitted` after it resolves the

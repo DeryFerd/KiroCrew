@@ -3295,12 +3295,14 @@ class TelegramDispatcher:
         (``True``/``False``), or ``None`` to tell the gate "not surfaced here,
         fall through to Slack/dashboard" — for a key this dispatcher cannot turn
         back into a chat (``unified`` dm_scope drops the peer, a non-``telegram``
-        key, an unparseable one) or when the client is not up. The operator's
-        ``channels`` governance ceiling is read TWICE for one prompt, and both
-        reads belong to the seam: before it invokes any hook, so a denied channel
-        is never prompted at all, and again through ``unpressed_wait_answer`` when
-        a wait elapses unpressed, because a deny can land inside that wait. This
-        method owns neither reading; it asks for the second one.
+        key, an unparseable one), when the client is not up, when the
+        destination's authorization has since been withdrawn, or when the post
+        fails. The operator's ``channels`` governance ceiling is read TWICE for
+        one prompt, and both reads belong to the seam: before it invokes any hook,
+        so a denied channel is never prompted at all, and again through
+        ``unpressed_wait_answer`` when a wait elapses unpressed, because a deny
+        can land inside that wait. This method owns neither reading; it asks for
+        the second one.
 
         The wait is the SAME deny-by-default one a tool prompt uses
         (:class:`TelegramApprovalDecider`, ``APPROVAL_TIMEOUT_S``): the press
@@ -3377,7 +3379,7 @@ class TelegramDispatcher:
             )
             return None
         try:
-            await client.send_message(
+            posted = await client.send_message(
                 chat_id,
                 body,
                 parse_mode="HTML",
@@ -3397,6 +3399,20 @@ class TelegramDispatcher:
             TelegramApprovalDecider.retire(key)
             logger.warning(
                 "Telegram: failed to post spawn-approval prompt for %s", rid, exc_info=True
+            )
+            return None
+        if not posted:
+            # This client reports a failed send by RETURNING no message id rather
+            # than by raising (a revoked token, a deleted forum Topic, a chat it
+            # cannot write to, a 5xx past its own retries), so the ``except`` above
+            # does not cover it. Same conclusion: nothing is on screen, so fall
+            # through instead of waiting out the whole decision window on a prompt
+            # nobody can press and handing that silence back as a denial.
+            TelegramApprovalDecider.retire(key)
+            logger.warning(
+                "Telegram: the spawn-approval prompt for %s was not accepted by the "
+                "chat; falling through",
+                rid,
             )
             return None
 

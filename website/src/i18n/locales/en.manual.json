@@ -1460,7 +1460,12 @@
   },
   "components": {
     "fileChangeChips": {
-      "diff_unavailable_file_exceeds_snapshot_limit": "Diff unavailable: file is too large to compare (over {{limit}} characters)."
+      "diff_unavailable_file_exceeds_snapshot_limit": "Diff unavailable: file is too large to compare (over {{limit}} characters).",
+      "file_only": "File only",
+      "diff_unavailable_turn_snapshot_budget": "This turn's changes were too large to keep every file's diff (over {{limit}} characters total).",
+      "turn_snapshot_budget_open_hint": "Click a file name to open it.",
+      "omitted_files_notice_one": "{{files}} more file changed in this turn is not listed.",
+      "omitted_files_notice_other": "{{files}} more files changed in this turn are not listed."
     },
     "queueStack": {
       "hidden_attachments_one": "+{{count}} attachment",

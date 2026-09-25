@@ -654,6 +654,34 @@ which testpath asked for the workers.
   file lands in the repo, and neither the test nor the residue check attributes it to
   this test.
 
+- **Never name one of the repository's own files by a bare relative path.** A
+  structural test that reads the source it pins has to name a file, and
+  `Path("src/kiro_crew/dashboard/ws.py")` names it against whatever directory the
+  process started in. That holds only while pytest is launched from the root: from a
+  subdirectory, an editor's runner, or any wrapper that changes directory first, the
+  same literal resolves to nothing and the read raises `FileNotFoundError` before a
+  single assertion runs — a failure that says nothing about the behaviour under test,
+  which costs a CI round and teaches readers to re-run past it.
+
+  Ask the **module under test** where it lives, which is the form that cannot go
+  stale: a module that moves or is renamed fails at import, and the path cannot name a
+  different file than the one the rest of the test exercises.
+
+  ```python
+  from kiro_crew.dashboard import ws
+  source = Path(ws.__file__).read_text(encoding="utf-8")
+  ```
+
+  When no module owns the file — a workflow, a script, a spec — resolve the repository
+  from the test file instead: `Path(__file__).resolve().parents[1] / <relative path>`.
+  Independent of the working directory, though it still spells the layout by hand.
+
+  `scripts/check_cwd_relative_repo_reads.py` enforces this over the collected test
+  trees. A relative literal that is only COMPARED, or joined onto a resolved root, is
+  not a violation — the allowlists elsewhere in this suite are exactly that shape —
+  and a file that changes directory itself is skipped, because a relative path there
+  names the tree the test built. One access can carry `# cwd-ok: <reason>`.
+
 - **A singleton with a background thread beats every filesystem cleanup.** `sel.py` is
   the worked example: `SecurityEventLog` is a process singleton whose writer is a
   *daemon thread*, and `_init_locked` binds its directory **once**, from whatever

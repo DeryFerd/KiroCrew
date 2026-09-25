@@ -8420,7 +8420,15 @@
       "temporary_active_switch_to_persistent": "Temporär — zum dauerhaften Modus wechseln",
       "temporary_desc": "Verwendet keine Erinnerungen und lernt keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Versuchen Sie: „Erstelle einen Plan, um das {{productName}}-Codepaket zu analysieren und die Dateianzahl nach Hauptkomponenten zu melden“",
-      "what_can_i_do_for_you": "Was kann ich für dich tun?"
+      "what_can_i_do_for_you": "Was kann ich für dich tun?",
+      "greeting_what_are_we_building_today": "Was bauen wir heute?",
+      "greeting_where_should_we_start": "Womit fangen wir an?",
+      "greeting_whats_on_your_mind": "Was hast du im Sinn?",
+      "greeting_ready_when_you_are": "Bereit, wenn du es bist.",
+      "greeting_good_to_see_you": "Schön, dich zu sehen. Was steht an?",
+      "greeting_good_morning": "Guten Morgen. Womit fangen wir an?",
+      "greeting_good_afternoon": "Guten Tag. Womit fangen wir an?",
+      "greeting_good_evening": "Guten Abend. Womit fangen wir an?"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "Markieren nicht möglich: Widget hat keinen Slug und keinen Nachrichtenkontext",

@@ -8538,7 +8538,15 @@
       "temporary_active_switch_to_persistent": "Temporal — cambiar al modo persistente",
       "temporary_desc": "No usa la memoria ni aprende lecciones. Conserva la transcripción para recuperar la pestaña.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Prueba: “Crea un plan para analizar el paquete de código de {{productName}} e informar del número de archivos por componentes principales”",
-      "what_can_i_do_for_you": "¿Qué puedo hacer por ti?"
+      "what_can_i_do_for_you": "¿Qué puedo hacer por ti?",
+      "greeting_what_are_we_building_today": "¿Qué construimos hoy?",
+      "greeting_where_should_we_start": "¿Por dónde empezamos?",
+      "greeting_whats_on_your_mind": "¿Qué tienes en mente?",
+      "greeting_ready_when_you_are": "Listo cuando tú lo estés.",
+      "greeting_good_to_see_you": "Qué bueno verte. ¿Qué sigue?",
+      "greeting_good_morning": "Buenos días. ¿Por dónde empezamos?",
+      "greeting_good_afternoon": "Buenas tardes. ¿Por dónde empezamos?",
+      "greeting_good_evening": "Buenas noches. ¿Por dónde empezamos?"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "No se puede destacar: el widget no tiene slug ni contexto de mensaje",

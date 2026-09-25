@@ -8420,7 +8420,15 @@
       "temporary_active_switch_to_persistent": "अस्थायी — स्थायी मोड पर जाएँ",
       "temporary_desc": "मेमोरी का उपयोग नहीं करता और कोई नई सीख नहीं लेता। टैब वापस पाने के लिए ट्रांसक्रिप्ट रखता है।",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "आज़माएँ: “{{productName}} कोड पैकेज का विश्लेषण करने और प्रमुख घटकों के अनुसार फ़ाइल संख्या बताने के लिए एक योजना बनाएँ”",
-      "what_can_i_do_for_you": "तुम्हारे लिए क्या कर सकता हूँ?"
+      "what_can_i_do_for_you": "तुम्हारे लिए क्या कर सकता हूँ?",
+      "greeting_what_are_we_building_today": "आज हम क्या बना रहे हैं?",
+      "greeting_where_should_we_start": "कहाँ से शुरू करते हैं?",
+      "greeting_whats_on_your_mind": "तुम्हारे मन में क्या है?",
+      "greeting_ready_when_you_are": "जब तुम तैयार हो, मैं तैयार हूँ।",
+      "greeting_good_to_see_you": "तुमसे मिलकर अच्छा लगा। आगे क्या?",
+      "greeting_good_morning": "सुप्रभात। कहाँ से शुरू करते हैं?",
+      "greeting_good_afternoon": "नमस्कार। कहाँ से शुरू करते हैं?",
+      "greeting_good_evening": "शुभ संध्या। कहाँ से शुरू करते हैं?"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "स्टार नहीं किया जा सकता: विजेट में कोई slug या संदेश संदर्भ नहीं है",

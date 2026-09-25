@@ -8656,7 +8656,15 @@
       "temporary_active_switch_to_persistent": "Временный — переключиться в постоянный режим",
       "temporary_desc": "Не использует память и не усваивает новых уроков. Сохраняет историю чата для восстановления вкладки.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Попробуйте: «Создай план анализа пакета кода {{productName}} и покажи количество файлов по основным компонентам»",
-      "what_can_i_do_for_you": "Чем могу помочь?"
+      "what_can_i_do_for_you": "Чем могу помочь?",
+      "greeting_what_are_we_building_today": "Что будем создавать сегодня?",
+      "greeting_where_should_we_start": "С чего начнём?",
+      "greeting_whats_on_your_mind": "О чём ты думаешь?",
+      "greeting_ready_when_you_are": "Я готов, когда готов ты.",
+      "greeting_good_to_see_you": "Рад тебя видеть. Что дальше?",
+      "greeting_good_morning": "Доброе утро. С чего начнём?",
+      "greeting_good_afternoon": "Добрый день. С чего начнём?",
+      "greeting_good_evening": "Добрый вечер. С чего начнём?"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "Нельзя добавить в избранное: у виджета нет slug или контекста сообщения",

@@ -8302,7 +8302,15 @@
       "temporary_active_switch_to_persistent": "임시 — 영구 모드로 전환",
       "temporary_desc": "메모리를 사용하지 않고 새로운 학습 내용도 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "예시: ‘{{productName}} 코드 패키지를 분석하고 주요 구성 요소별 파일 수를 보고하는 계획을 만드세요’",
-      "what_can_i_do_for_you": "무엇을 도와드릴까요?"
+      "what_can_i_do_for_you": "무엇을 도와드릴까요?",
+      "greeting_what_are_we_building_today": "오늘은 무엇을 만들어 볼까요?",
+      "greeting_where_should_we_start": "어디서부터 시작할까요?",
+      "greeting_whats_on_your_mind": "무슨 생각을 하고 계신가요?",
+      "greeting_ready_when_you_are": "준비되시면 언제든지요.",
+      "greeting_good_to_see_you": "반가워요. 다음은 무엇인가요?",
+      "greeting_good_morning": "좋은 아침이에요. 어디서부터 시작할까요?",
+      "greeting_good_afternoon": "좋은 오후예요. 어디서부터 시작할까요?",
+      "greeting_good_evening": "좋은 저녁이에요. 어디서부터 시작할까요?"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "즐겨찾기할 수 없습니다: 위젯에 slug 또는 메시지 컨텍스트가 없습니다",

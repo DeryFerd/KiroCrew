@@ -8302,7 +8302,15 @@
       "temporary_active_switch_to_persistent": "一時的 — 永続モードに切り替える",
       "temporary_desc": "メモリを使わず、新しいレッスンも学習しません。タブを復元できるよう、会話記録は保持します。",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "試す：「{{productName}} コードパッケージを分析し、主要コンポーネント別のファイル数をレポートするプランを作成してください」",
-      "what_can_i_do_for_you": "何かお手伝いできることはありますか？"
+      "what_can_i_do_for_you": "何かお手伝いできることはありますか？",
+      "greeting_what_are_we_building_today": "今日は何を作りましょうか？",
+      "greeting_where_should_we_start": "どこから始めましょうか？",
+      "greeting_whats_on_your_mind": "何を考えていますか？",
+      "greeting_ready_when_you_are": "準備ができたらいつでもどうぞ。",
+      "greeting_good_to_see_you": "お会いできてうれしいです。次は何をしますか？",
+      "greeting_good_morning": "おはようございます。どこから始めましょうか？",
+      "greeting_good_afternoon": "こんにちは。どこから始めましょうか？",
+      "greeting_good_evening": "こんばんは。どこから始めましょうか？"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "スター付けできません：ウィジェットにslugまたはメッセージコンテキストがありません",

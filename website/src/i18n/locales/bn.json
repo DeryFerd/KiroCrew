@@ -8420,7 +8420,15 @@
       "temporary_active_switch_to_persistent": "অস্থায়ী — স্থায়ী মোডে বদলান",
       "temporary_desc": "মেমরি ব্যবহার করে না এবং নতুন কোনো শিক্ষা শেখে না। ট্যাব পুনরুদ্ধারের জন্য ট্রান্সক্রিপ্ট রাখে।",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "যেমন: “{{productName}} কোড প্যাকেজ বিশ্লেষণ করে প্রধান কম্পোনেন্ট অনুযায়ী ফাইলের সংখ্যা জানানোর একটি প্ল্যান তৈরি করো”",
-      "what_can_i_do_for_you": "তোমার জন্য কী করতে পারি?"
+      "what_can_i_do_for_you": "তোমার জন্য কী করতে পারি?",
+      "greeting_what_are_we_building_today": "আজ আমরা কী তৈরি করছি?",
+      "greeting_where_should_we_start": "আমরা কোথা থেকে শুরু করব?",
+      "greeting_whats_on_your_mind": "তোমার মনে কী আছে?",
+      "greeting_ready_when_you_are": "তুমি প্রস্তুত হলেই আমি প্রস্তুত।",
+      "greeting_good_to_see_you": "তোমাকে দেখে ভালো লাগল। এরপর কী?",
+      "greeting_good_morning": "সুপ্রভাত। আমরা কোথা থেকে শুরু করব?",
+      "greeting_good_afternoon": "শুভ অপরাহ্ন। আমরা কোথা থেকে শুরু করব?",
+      "greeting_good_evening": "শুভ সন্ধ্যা। আমরা কোথা থেকে শুরু করব?"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "স্টার দেওয়া যাবে না: উইজেটের কোনো slug বা মেসেজ কনটেক্সট নেই",

@@ -115,6 +115,12 @@ export interface SkillScriptValidation {
   report: Record<string, string[]>
 }
 
+/** Category of a welcome-screen suggestion; drives its icon tile. */
+export type SuggestionKind = 'code' | 'review' | 'ops' | 'tasks' | 'write' | 'research' | 'schedule' | 'general'
+
+/** One `/api/suggestions` item. `kind` is a string on the wire, so an unknown value is possible. */
+export type SuggestionItem = string | { text: string; kind?: string }
+
 export type McpShareReason = {
   code: string
   detail: string
@@ -3461,7 +3467,8 @@ export const api = {
   // Read-only governance policy viewer (Settings → Security). No write path —
   // the enterprise ceiling is file-authored and un-editable via the UI.
   governancePolicy: () => get('/api/governance/policy').then(j) as Promise<GovernancePolicyData>,
-  suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: string[]; generated_at: number; stale: boolean }>,
+  // Items are a bare string (legacy / cached payloads) or `{ text, kind }`.
+  suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: SuggestionItem[]; generated_at: number; stale: boolean }>,
   branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
   // Instances (multi-instance management) — owner-only, gated by instances.enabled.
   // listInstances throws ApiError(403) when the feature is disabled; callers

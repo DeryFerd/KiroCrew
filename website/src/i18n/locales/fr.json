@@ -8538,7 +8538,15 @@
       "temporary_active_switch_to_persistent": "Temporaire — passer au mode persistant",
       "temporary_desc": "N’utilise pas la mémoire et n’apprend aucune leçon. Conserve la transcription pour restaurer l’onglet.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Essayez : « Crée un plan pour analyser le package de code {{productName}} et indiquer le nombre de fichiers par composant principal »",
-      "what_can_i_do_for_you": "Que puis-je faire pour toi ?"
+      "what_can_i_do_for_you": "Que puis-je faire pour toi ?",
+      "greeting_what_are_we_building_today": "Que construisons-nous aujourd'hui ?",
+      "greeting_where_should_we_start": "Par où commençons-nous ?",
+      "greeting_whats_on_your_mind": "Qu'as-tu en tête ?",
+      "greeting_ready_when_you_are": "Prêt quand tu l'es.",
+      "greeting_good_to_see_you": "Ravi de te revoir. Et maintenant ?",
+      "greeting_good_morning": "Bonjour. Par où commençons-nous ?",
+      "greeting_good_afternoon": "Bon après-midi. Par où commençons-nous ?",
+      "greeting_good_evening": "Bonsoir. Par où commençons-nous ?"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "Impossible d’ajouter aux favoris : le widget n’a ni slug ni contexte de message",

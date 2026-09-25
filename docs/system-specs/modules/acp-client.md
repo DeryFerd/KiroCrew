@@ -69,11 +69,14 @@ operator changed or removed. Older overlays use their recorded local/global
 source and boolean preference for restoration. Stop projected sessions before
 rollback so another active Crew process cannot reassert the shared overlay.
 Inactive aliases owned by the same Crew data home are pruned when no projection
-in this process holds them and no held lease in any process names them. The
-recorded work directory is provenance, not a liveness proof: a per-run work
-directory (`workspace_root()/subagent_<id>`, `cron_<id>`) outlives its run, so a
-reclaim keyed on its existence keeps one alias per agent for every run ever
-spawned. Each run caps reclaims at `_PRUNE_MAX_RECLAIMS_PER_RUN` plus the number
+in this process holds them and no held lease in any process names them. An
+alias is named by a 24-hex digest of the agent name, the owning Crew data home
+and the view content, so every spawn from that home that derives the same view
+-- any run folder, any session -- publishes the same file, and publication skips
+an existing alias whose bytes already match. Views can still differ per
+workspace: a SCOPE_PROJECT agent's prompt path and workspace-local inheritance
+shape the view, so those agents get
+one alias per workspace. Each run caps reclaims at `_PRUNE_MAX_RECLAIMS_PER_RUN` plus the number
 of aliases it publishes. Aliases published by builds that predate this lifecycle carry NO
 record of either kind, so an ownership-keyed reclaim alone would leave the entire
 accumulated backlog on disk and bound only post-upgrade growth -- which is the
@@ -126,14 +129,24 @@ offset is drawn per call rather than remembered, since the workload this bounds
 spawns a fresh process per run and a process-local cursor would restart at zero
 every time. Drawing it makes reach across successive spawns probabilistic rather
 than scheduled: the backlog is bounded and shrinking, and every entry is reached
-in expectation, but no single spawn is promised any particular entry. Projected agent JSON contains only fields accepted by Kiro's strict
+in expectation, but no single spawn is promised any particular entry.
+An accumulated backlog is cleared by a
+gateway-boot drain (`drain_stale_aliases`, reached from the boot janitor
+through the `agent_sdk.drivers.acp` seam): it runs that same per-spawn prune
+under the publication lock in a loop, pausing between batches for longer than
+the lock's poll cap so a waiting spawn can take the lock. A batch that cannot
+take the lock counts as one that reclaimed nothing. It stops after
+`_DRAIN_IDLE_BATCHES` consecutive batches that reclaim nothing, each from a
+fresh start offset, or at `_DRAIN_MAX_BATCHES`.
+
+Projected agent JSON contains only fields accepted by Kiro's strict
 schema; lifecycle ownership lives in the non-spec
 `.kirocrew-skill-projection-metadata` directory. Each sidecar records the alias's
 exact byte digest, so a stale or replaced sidecar cannot authorize deletion of a
 different spec. No released build ever wrote lifecycle fields INTO a spec --
 kiro-cli denies unknown fields, so the projection never could -- and an alias
 without a sidecar is judged by the unrecorded path above instead. The recorded
-work directory and source paths are never probed, so untrusted metadata cannot
+source paths are never probed, so untrusted metadata cannot
 trigger a filesystem or network lookup. Each live projection publishes one bounded lease in the non-spec
 `.kirocrew-skill-projection-leases` directory as TWO files: a `.json` record
 naming its aliases, which is never locked, and a `.hold` sidecar that carries the
@@ -186,9 +199,9 @@ bound is reported as `truncated`: the measured counts are then floors, the
 derived ones (not-named, this home's share) are not printed, and because an
 unscanned record could be the unreadable one that stops the reclaim, the report
 says reclaimability is unknown rather than promising a drain. A backlog left by a build that predates the reclaim is
-thereby visible without `ls`, and its drain can be watched across spawns. Above
-`_SKILL_VIEW_BACKLOG_WARN` (2,000; a healthy host carries live sessions x
-authored agents, a few hundred) it warns and says exactly which share the
+thereby visible without `ls`, and its drain can be watched. Above
+`_SKILL_VIEW_BACKLOG_WARN` (2,000; a healthy host carries roughly authored
+agents x workspaces) it warns and says exactly which share the
 reclaim covers: this home's unreferenced aliases, a bounded number per spawn;
 this home's lease-named aliases are described as kept while their lease is
 held (the census probes no lock, so a crash-stale record is indistinguishable

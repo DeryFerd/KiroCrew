@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import json
+import os
 import textwrap
 import threading
 from unittest.mock import AsyncMock, MagicMock
@@ -1021,6 +1022,53 @@ class TestVoiceVoices:
         env = seen["env"]
         assert "PYTHONPATH" not in env
         assert "PYTHONHOME" not in env
+        assert env["MESH2535_KEEP"] == "kept"
+
+    @pytest.mark.asyncio
+    async def test_voices_cli_python_env_strip_is_case_insensitive(self, tmp_path, monkeypatch):
+        """Windows treats environment names as case-insensitive, so a lowercase
+        spelling there IS the same interpreter variable and must not survive;
+        on POSIX a lowercase spelling is inert to CPython. The odd case is
+        injected straight into ``os.environ`` because that proxy uppercases on
+        Windows, which would make a ``setenv``-built pin vacuous there."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
+        monkeypatch.setenv("MESH2535_KEEP", "kept")
+        # Inject the odd-case key through the mapping the code reads, so the pin
+        # does not depend on the platform's key-casing (a bare `setenv` is
+        # uppercased by the Windows proxy and would assert nothing there).
+        injected = dict(os.environ)
+        injected["pythonpath"] = "/bundle/site-packages"
+        monkeypatch.setattr(os, "environ", injected)
+        seen: dict = {}
+
+        async def mock_exec(*args, **kwargs):
+            seen.update(kwargs)
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b'{"Voices": []}', b""))
+            return proc
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: "/usr/bin/aws"
+        )
+
+        from kiro_crew.dashboard.chat_voice import api_voice_voices
+
+        app = web.Application()
+        app["state"] = _make_state(tmp_path)
+        app.router.add_get("/api/voice/voices", api_voice_voices)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/voice/voices")
+            assert resp.status == 200
+
+        env = seen["env"]
+        assert "pythonpath" not in env
         assert env["MESH2535_KEEP"] == "kept"
 
     @pytest.mark.asyncio

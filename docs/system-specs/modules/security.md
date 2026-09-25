@@ -1460,6 +1460,76 @@ injected agent and a click. Pinned by
 behaviourally AND asserts over the AST that `on_tool_call` references no
 mutating-kind denylist.
 
+### Inert mentions of a permission verb (`security/argv_floor.py`)
+
+The catalog's `chmod`/`chown` rows are `re.search` patterns over the whole command
+text. A regex over text cannot tell a verb that RUNS from the same word handed to a
+search tool as a pattern, so an ordinary audit of those very rules was refused —
+`grep -nE 'chmod|chown|/etc/' src/` denied, while preventing nothing, since the same
+search completes by spelling the verb another way.
+
+`argv_floor._perm_verb_mention_only` supplies the question the regex cannot ask: **is
+every occurrence of the verb an ARGUMENT of a command that treats arguments as data?**
+It is argv-structural, not textual — it reuses the frame walk, `_argv_programs` and the
+data-consumer primitives the self-protection floor already relies on. `is_denied`
+consults it only for the patterns the catalog opts in
+(`denied_rules._PERM_VERB_MENTION_PATTERNS`, derived from the catalog by a verb-anchored
+selector so a renamed or added row stays covered).
+
+**A re-spelled verb is judged by position, not by its spelling.** The per-token gates
+key on the verb as a WORD, and a shell does not need the word: `ch""mod`, `ch'mod'`,
+`"ch"mod`, `ch\mod` and `ch$()mod` all execute it, and the normalized deny view the
+pattern is matched against de-quotes them back to it. So the walk's TRIGGER is widened
+rather than gated beside — a token that only de-quotes to the verb
+(`argv_floor._deglues_to_perm_verb`, pre-filtered on the characters that permit a
+de-glue at all) enters the same per-token loop as one that spells it. That is what
+covers the pass-through wrappers: `command`, `env`, `exec`, `nohup`, `time`, `nice`,
+`sudo`, `xargs` and `find -exec` each leave the verb at an ARGUMENT position, where the
+frame's program is the wrapper and no wrapper is an accepted data consumer, so they are
+refused by the gate that already exists instead of by a hand-kept wrapper list. Each of
+those spellings was measured taking a scratch file from `0o600` to `0o777` while the
+command as a whole was admitted.
+
+**Fail-closed is the whole posture.** Every gate in the walk is a REFUSAL, so a
+construct the walk cannot read keeps the deny. Concretely it refuses: any frame that
+RUNS a permission verb in program position, including nested payloads, asked through
+`_shell_tokens` — the tokenizer the normalized deny views are themselves built on, so
+where that reading and the walk's own argv disagree the deny follows the text the
+pattern matched; any frame whose PROGRAM cannot be resolved, because a glob (`ch?od`)
+or a surviving expansion (`${x}chmod`) names a command the filesystem or the
+environment decides and no de-glue can see; a frame that fails to tokenize; a redirect
+other than `/dev/null` or a file-descriptor duplication; a newline; a control operator
+GLUED inside a word, because `_argv_programs` opens a new frame only between whole
+tokens and a program after a glued operator is therefore invisible to every other gate;
+a command whose input is over `_PERM_VERB_MENTION_MAX_CHARS`; and any downstream
+pipeline stage that is not itself an accepted data consumer.
+
+**The accepted set is subtractive.** `_PERM_VERB_MENTION_PROGRAMS` is
+`_DATA_CONSUMER_PROGRAMS` minus `_PERM_VERB_MENTION_EXCLUDED_PROGRAMS`, so a consumer
+added to the shared vocabulary is inherited here and a mistake in the exclusion list
+costs a false positive rather than a bypass. Three reasons put a program on the
+exclusion list: it MUTATES the filesystem (`cp`, `mv`, `tee`, and the permission verbs
+themselves, which must never exonerate their own mention), it EMITS its argument as
+output (`echo`, `printf`, so a redirect turns the mention into a script on disk), or it
+SPAWNS a helper named by an option or script operand (`rg --pre`, `less +'!cmd'`,
+`awk` `system()`, `sed` `e`, `sort --compress-program`). Membership is pinned by a test
+whose failure message names the exclusion list as the place to decide.
+
+Two accepted programs — `uniq` and `xxd` — write their SECOND operand. They are judged
+on operand count per command (`_writes_a_second_operand`) rather than excluded, because
+the exemption's commonest shape pipes into them with no operand at all
+(`… | uniq | head`) and writes nothing, while `xxd <verb> /usr/local/bin/git` truncates
+a protected path with no verb in program position at all.
+
+Operand counting reaches an operand sink only. A program that names its sink with an
+OPTION is excluded outright instead — macOS `base64 -o out_file` and `yq -i` both write
+a path named by a flag, and an option allow-list would fail OPEN on the flag nobody
+enumerated. `jq` stays exempt: it has no in-place flag.
+
+The narrowing records its own SEL `mechanism` value, `_PERM_VERB_MENTION`, distinct
+from the glob carve-out map's `_DENY_EXCEPTIONS`; the two share one emitter and nothing
+else, and the audit trail exists to answer which one allowed a command.
+
 ### Sanctioned read channels over fenced data
 
 The identity-store fence (`identity_stores.py::IDENTITY_STORE_ROOTS`, spliced into

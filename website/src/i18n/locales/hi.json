@@ -15494,7 +15494,6 @@
         "code_ready_for": "{{name}} का साइन-इन कोड तैयार है",
         "confirm_cancel_remove": "हाँ, “{{tag}}” हटाओ",
         "confirm_delete_of": "“{{name}}” हटाना है?",
-        "connect_after_sign_in": "साइन-इन के बाद कनेक्ट करें",
         "copied": "Copied",
         "copy_code_aria": "अपना साइन-इन कोड {{code}} कॉपी करें",
         "copy_command": "Copy command",

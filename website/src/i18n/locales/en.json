@@ -9027,7 +9027,6 @@
         "code_ready_for": "The sign-in code for {{name}} is ready",
         "confirm_cancel_remove": "Yes, remove “{{tag}}”",
         "confirm_delete_of": "Confirm deleting “{{name}}”",
-        "connect_after_sign_in": "Connect after sign-in",
         "copied": "Copied",
         "copy_code_aria": "Copy your sign-in code {{code}}",
         "copy_command": "Copy command",

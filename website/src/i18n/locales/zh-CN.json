@@ -15287,7 +15287,6 @@
         "code_ready_for": "{{name}} 的登录验证码已就绪",
         "confirm_cancel_remove": "是，删除 “{{tag}}”",
         "confirm_delete_of": "确认删除“{{name}}”？",
-        "connect_after_sign_in": "登录后再连接",
         "copied": "Copied",
         "copy_code_aria": "复制你的登录代码 {{code}}",
         "copy_command": "Copy command",

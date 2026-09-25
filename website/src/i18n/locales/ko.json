@@ -15287,7 +15287,6 @@
         "code_ready_for": "{{name}}의 로그인 코드가 준비되었습니다",
         "confirm_cancel_remove": "예, ‘{{tag}}’ 제거",
         "confirm_delete_of": "‘{{name}}’을(를) 삭제하시겠습니까?",
-        "connect_after_sign_in": "로그인 후 연결",
         "copied": "Copied",
         "copy_code_aria": "로그인 코드 {{code}} 복사",
         "copy_command": "Copy command",

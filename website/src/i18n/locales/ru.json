@@ -15908,7 +15908,6 @@
         "code_ready_for": "Код для входа для {{name}} готов",
         "confirm_cancel_remove": "Да, удалить «{{tag}}»",
         "confirm_delete_of": "Удалить «{{name}}»?",
-        "connect_after_sign_in": "Подключить после входа",
         "copied": "Copied",
         "copy_code_aria": "Скопировать код входа {{code}}",
         "copy_command": "Copy command",

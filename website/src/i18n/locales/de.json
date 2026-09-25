@@ -15494,7 +15494,6 @@
         "code_ready_for": "Der Anmeldecode für {{name}} ist bereit",
         "confirm_cancel_remove": "Ja, „{{tag}}“ entfernen",
         "confirm_delete_of": "Confirm deleting „{{name}}“",
-        "connect_after_sign_in": "Nach der Anmeldung verbinden",
         "copied": "Copied",
         "copy_code_aria": "Anmeldecode {{code}} kopieren",
         "copy_command": "Copy command",

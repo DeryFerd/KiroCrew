@@ -15494,7 +15494,6 @@
         "code_ready_for": "{{name}}-এর সাইন-ইন কোড তৈরি",
         "confirm_cancel_remove": "হ্যাঁ, “{{tag}}” সরিয়ে দাও",
         "confirm_delete_of": "“{{name}}” মুছে ফেলবেন?",
-        "connect_after_sign_in": "সাইন-ইনের পরে সংযোগ করো",
         "copied": "Copied",
         "copy_code_aria": "তোমার সাইন-ইন কোড {{code}} কপি করো",
         "copy_command": "Copy command",

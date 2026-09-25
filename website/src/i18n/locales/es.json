@@ -15701,7 +15701,6 @@
         "code_ready_for": "El código de inicio de sesión de {{name}} está listo",
         "confirm_cancel_remove": "Sí, eliminar “{{tag}}”",
         "confirm_delete_of": "Confirm deleting “{{name}}”",
-        "connect_after_sign_in": "Conectar después del inicio de sesión",
         "copied": "Copied",
         "copy_code_aria": "Copiar tu código de inicio de sesión {{code}}",
         "copy_command": "Copy command",

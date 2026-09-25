@@ -15701,7 +15701,6 @@
         "code_ready_for": "O código de login de {{name}} está pronto",
         "confirm_cancel_remove": "Sim, remover “{{tag}}”",
         "confirm_delete_of": "Confirm deleting “{{name}}”",
-        "connect_after_sign_in": "Conectar após o login",
         "copied": "Copied",
         "copy_code_aria": "Copiar seu código de login {{code}}",
         "copy_command": "Copy command",

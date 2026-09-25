@@ -15287,7 +15287,6 @@
         "code_ready_for": "{{name}} のサインインコードの準備ができました",
         "confirm_cancel_remove": "はい、「{{tag}}」 を削除",
         "confirm_delete_of": "「{{name}}」を削除しますか？",
-        "connect_after_sign_in": "サインイン後に接続",
         "copied": "Copied",
         "copy_code_aria": "サインインコード {{code}} をコピー",
         "copy_command": "Copy command",

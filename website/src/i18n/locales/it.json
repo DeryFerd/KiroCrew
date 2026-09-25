@@ -15701,7 +15701,6 @@
         "code_ready_for": "Il codice di accesso di {{name}} è pronto",
         "confirm_cancel_remove": "Sì, rimuovi «{{tag}}»",
         "confirm_delete_of": "Confirm deleting «{{name}}»",
-        "connect_after_sign_in": "Connetti dopo l’accesso",
         "copied": "Copied",
         "copy_code_aria": "Copia il tuo codice di accesso {{code}}",
         "copy_command": "Copy command",

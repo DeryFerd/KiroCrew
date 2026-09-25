@@ -15701,7 +15701,6 @@
         "code_ready_for": "Le code de connexion de {{name}} est prêt",
         "confirm_cancel_remove": "Oui, supprimer « {{tag}} »",
         "confirm_delete_of": "Confirm deleting « {{name}} »",
-        "connect_after_sign_in": "Se connecter après la connexion Kiro",
         "copied": "Copied",
         "copy_code_aria": "Copier votre code de connexion {{code}}",
         "copy_command": "Copy command",

@@ -3447,6 +3447,45 @@ lane slot and its runtime is still resident. `effective_caps` and
 Each computation samples `kirocrew.taskq.depth{state}`,
 `kirocrew.taskq.oldest_wait_secs`, `kirocrew.taskq.effective_cap{lane_kind}` and
 `kirocrew.taskq.pressure_reason{reason}` -- every attribute a closed-set value.
+
+**Refresh signal.** The verdict is not only computed on request. Every
+computation goes through `handlers/sessions.py::refresh_session_health` (the
+one owner of the payload cache and of the signal), which digests the verdict
+with `health_verdict_fingerprint` and, when the digest differs from the one last
+signalled, broadcasts the WS frame `session_health_changed` with the payload
+`{"ts": <wall clock>}` and nothing else -- no slot, no session key, no count, no
+classification. The frame says only THAT the verdict moved; a subscriber
+entitled to `GET /api/sessions/health` re-reads it, and a frontend-only app whose
+manifest does not list that path refreshes the surfaces it can already read
+instead of polling an endpoint that answers it with a denial. The digest
+excludes every age, timestamp and monotonic reading (a quiet resample is not a
+change) and folds everything else in BY IDENTITY, never only by count: each
+slot's classification, which slots are stalled, each waiting and recovering
+row's identity and state, the queue's `by_state` tallies, `effective_caps` and
+`degrade_reason` -- so one row leaving a state as another enters it is a change
+even though every count stands still. The first computation after process start
+seeds the baseline silently rather than firing a refresh at every subscriber on
+every gateway restart; a broadcast that fails leaves the digest uncommitted so
+the change is retried on the next computation. The frame rides the pre-existing
+`sessions` event declaration in `ws_event_scope._GLOBAL_EVENT_DECLARATIONS`
+(`events` and `api` are independent manifest fields, which is why the frame must
+stay data-free), and delivery is judged per frame by `ws_event_allowed` against
+the live scope. Because the verdict also moves with the clock (a turn crossing
+the stall threshold, a queue draining, a cap being cut), a WebSocket connection
+whose declaration set includes `sessions` runs a per-connection timer driver
+(`ws.py::_refresh_health_loop`) that calls `refresh_session_health` at connect
+and then every `_HEALTH_REFRESH_SECS` -- the handler's own cache TTL, so the call
+is TTL-gated and single-flighted and every declaring socket together costs at
+most one computation per interval. The first tick is at connect rather than
+after one interval because the first computation in a process is the silent
+baseline: a driver that slept first would let a verdict that moved during that
+sleep become the baseline and never signal it. A connection that declared
+nothing, or something unrelated, runs no driver, and a dashboard user (not
+declaration-gated, reads the endpoint directly) drives nothing either. The app SDK's event-declaration map
+(`website/src/app-sdk/index.ts`) lists `session_health_changed` under `sessions`
+so an app author sees which declaration the frame rides. Tests:
+`test/test_session_health_signal.py`.
+
 Tests: `test/test_session_health.py`, `test/test_sessions_health_cache.py`,
 `test/test_recovery_policy.py`, `test/test_recovery_ladder.py`,
 `test/test_recovery_l1_chat_runner.py`.

@@ -26,6 +26,7 @@ from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.apps import permissions as app_permissions
@@ -72,11 +73,15 @@ from kiro_crew.dashboard.chat_persistence import (
     COLOR_HEX_RE,
     _attach_variants,
     _rehydrate_slot_title,
+    _remember_reasoning_effort_for_restore,
     _restored_agent_name,
     _restored_mode,
     _validate_autocompact_pct,
+    cap_effort_capability_levels,
+    get_reasoning_effort_ordered,
     get_reasoning_effort_values,
     pin_private_agent_store,
+    register_reasoning_effort_values,
     release_prewarmed_session,
     save_slot_off_loop,
 )
@@ -137,6 +142,7 @@ from kiro_crew.dashboard.remote_adopt import (
 from kiro_crew.dashboard.remote_relay import (
     RemoteTurnError,
     create_peer_slot,
+    ensure_version_parity,
     forward_peer_selection,
     forward_peer_stop,
     peer_is_connected,
@@ -7095,6 +7101,21 @@ async def _apply_remote_pick_locked(
     has several early returns, and a split makes "the lock covers all of them"
     checkable at a glance instead of by re-reading every exit.
     """
+    if control == "reasoning_effort":
+        try:
+            # Reserve durable restore capacity before the peer commits its pick.
+            # A post-commit marker failure cannot be reported as a successful
+            # selection that silently disappears after restart.
+            await asyncio.to_thread(_remember_reasoning_effort_for_restore, body[control])
+        except (OSError, ValueError) as exc:
+            logger.warning("Cannot retain remote effort selection: %s", exc)
+            return web.json_response(
+                {
+                    "error": "reasoning effort persistence unavailable",
+                    "code": "effort_marker_unavailable",
+                },
+                status=503,
+            )
     try:
         accepted = await forward_peer_selection(state, slot, control, body)
     except RemoteTurnError as exc:
@@ -7119,6 +7140,14 @@ async def _apply_remote_pick_locked(
         # Same reason the local path bumps it: an explicit pick has to outrank
         # the model-fallback restore probe.
         slot._model_pick_gen += 1
+    normalized_model = ""
+    if control == "reasoning_effort":
+        base, level = model_registry.split_effort_suffix(slot.model)
+        if level and accepted.get("model") == base:
+            # The peer moved a legacy Codex pair into separate model/effort
+            # fields. Mirror both fields in the same metadata transaction.
+            slot.model = base
+            normalized_model = base
     # Persist the accepted pick immediately, exactly as the local agent switch
     # does. The periodic dirty-slot flush would write it eventually (both save
     # routes rebuild these fields from the slot), but the two ends diverge inside
@@ -7128,21 +7157,27 @@ async def _apply_remote_pick_locked(
     # can only ever disagree with itself, which is why the local model/effort/
     # workspace routes can leave it to the flush and this one cannot.
     persisted: dict[str, Any] = {control: value}
+    if normalized_model:
+        persisted["model"] = normalized_model
     if control == "agent" and slot.workspace:
         # The mirrored workspace is as much the peer's committed state as the
         # agent is, so it goes in the same write — persisting one without the
         # other would restore the pair inconsistent after a restart.
         persisted["workspace"] = slot.workspace
-    if state.conversation_log and not slot.is_restricted:
+    conversation_log = state.conversation_log
+    if conversation_log and not slot.is_restricted:
         try:
             # update_metadata takes a flock and closes fds — blocking-on-loop
             # prohibited, so it goes to a worker thread (same reasoning as the
             # local agent switch).
-            await asyncio.to_thread(
-                state.conversation_log.update_metadata,
-                _history_key_for(slot.key),
-                persisted,
-            )
+            def persist_pick() -> None:
+                if control == "reasoning_effort":
+                    # A peer-only level needs its gateway-owned restore marker
+                    # before the transcript starts claiming the selected value.
+                    _remember_reasoning_effort_for_restore(value)
+                conversation_log.update_metadata(_history_key_for(slot.key), persisted)
+
+            await asyncio.to_thread(persist_pick)
         except Exception:
             # The peer COMMITTED this pick the moment it answered, so the local
             # write is the side that fell behind — re-arm the periodic
@@ -7160,7 +7195,14 @@ async def _apply_remote_pick_locked(
             )
     logger.info("Remote slot %s %s set to %r on %s", slot.key, control, value, slot.instance_id)
     state.push_slots_update()
-    return web.json_response({"ok": True, control: value, "remote": True})
+    return web.json_response(
+        {
+            "ok": True,
+            control: value,
+            "remote": True,
+            **({"model": normalized_model} if normalized_model else {}),
+        }
+    )
 
 
 async def _record_explicit_agent_selection(
@@ -9479,6 +9521,151 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     )
 
 
+async def _configured_backend_for_slot(slot: _ChatSlot) -> str:
+    """Resolve a cold slot through the same member-aware gate as the provider factory."""
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    from kiro_crew.members import select_provider_backend
+
+    return select_provider_backend(
+        effective_session_key(slot),
+        config.agent.member_acp_backend,
+        config.agent.acp_backend,
+    )
+
+
+async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Response:
+    """Report the live ACP session's model and effort selection capabilities.
+
+    An absent session is unknown, not unsupported. The composer can preserve its
+    cold-start behavior until the first ACP session has advertised its options.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if slot is None:
+        return _slot_not_found()
+    denied = _deny_cross_app_slot_access(request, slot, name, "slot_selection_capabilities")
+    if denied is not None:
+        return denied
+    if slot.is_remote:
+        denied = deny_non_owner_remote_operation(request, slot, "slot_selection_capabilities")
+        if denied is not None:
+            return denied
+        mgr = getattr(state, "instances_manager", None)
+        if mgr is None:
+            return web.json_response(
+                {"error": "peer unavailable", "code": "peer_unavailable"}, status=503
+            )
+        try:
+            await ensure_version_parity(mgr, slot.instance_id)
+            async with mgr.proxy_request(
+                slot.instance_id,
+                "GET",
+                f"api/chat/slots/{slot.remote_slot}/selection-capabilities",
+            ) as upstream:
+                raw = await upstream.content.read(4097)
+                status = upstream.status
+            if status != 200 or len(raw) > 4096:
+                return web.json_response(
+                    {
+                        "error": "peer capabilities unavailable",
+                        "code": "peer_capabilities_unavailable",
+                    },
+                    status=502,
+                )
+            peer = json.loads(raw)
+        except Exception as exc:
+            logger.debug("Peer selection capabilities unavailable (%s)", type(exc).__name__)
+            return web.json_response(
+                {"error": "peer capabilities unavailable", "code": "peer_capabilities_unavailable"},
+                status=502,
+            )
+        if not isinstance(peer, dict):
+            return web.json_response(
+                {"error": "invalid peer capabilities", "code": "invalid_peer_capabilities"},
+                status=502,
+            )
+        if peer.get("known") is not True:
+            return web.json_response(
+                {
+                    "known": False,
+                    "model_effort_pair_ids": peer.get("model_effort_pair_ids") is True,
+                }
+            )
+        backend = peer.get("backend")
+        if not isinstance(backend, str) or len(backend) > 32:
+            return web.json_response(
+                {"error": "invalid peer capabilities", "code": "invalid_peer_capabilities"},
+                status=502,
+            )
+        levels = peer.get("effort_levels")
+        levels = (
+            cap_effort_capability_levels(levels, source="peer live")
+            if isinstance(levels, list)
+            else []
+        )
+        # The peer may advertise an ACP level (for example Pi's "minimal")
+        # that this hub has not seen locally. Register the sanitized levels
+        # before the composer offers them; the POST validates against this set.
+        if peer.get("effort_supported") is True and levels:
+            levels = register_reasoning_effort_values(levels)
+        return web.json_response(
+            {
+                "known": True,
+                "backend": backend,
+                "effort_supported": peer.get("effort_supported") is True and bool(levels),
+                "effort_levels": levels,
+                "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+            }
+        )
+    provider = state.sessions.get_provider(effective_session_key(slot))
+    if not isinstance(provider, AcpProvider):
+        # The slot can exist before its ACP session. The configured harness
+        # still knows whether model IDs encode effort, so the picker can render
+        # the base rows while live effort options are pending.
+        backend = await _configured_backend_for_slot(slot)
+        return web.json_response(
+            {
+                "known": False,
+                "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+            }
+        )
+    backend = provider.capabilities.backend
+    supported = provider.supports_effort()
+    levels = (
+        cap_effort_capability_levels(
+            (
+                level
+                for level in provider.get_valid_effort_levels()
+                if isinstance(level, str) and level in get_reasoning_effort_values()
+            ),
+            source="local live",
+        )
+        if supported
+        else []
+    )
+    if supported and not levels:
+        # Some model-scoped harnesses (notably kiro-cli) accept effort but do
+        # not advertise an ACP config option. Keep the existing fallback menu.
+        levels = cap_effort_capability_levels(
+            (
+                level
+                for level in get_reasoning_effort_ordered()
+                if level in get_reasoning_effort_values()
+            ),
+            source="local fallback",
+        )
+    return web.json_response(
+        {
+            "known": True,
+            "backend": backend,
+            "effort_supported": supported and bool(levels),
+            "effort_levels": levels,
+            "model_effort_pair_ids": backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+        }
+    )
+
+
 async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/reasoning-effort — set reasoning effort.
 
@@ -9563,11 +9750,41 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_reasoning_effort", session_key)
         if denied is not None:
             return denied
-        if slot.reasoning_effort == effort:
+        try:
+            await asyncio.to_thread(_remember_reasoning_effort_for_restore, effort)
+        except (OSError, ValueError) as exc:
+            logger.warning("Cannot retain effort selection: %s", exc)
+            return web.json_response(
+                {
+                    "error": "reasoning effort persistence unavailable",
+                    "code": "effort_marker_unavailable",
+                },
+                status=503,
+            )
+        provider = state.sessions.get_provider(session_key)
+        legacy_model = slot.model
+        split_base, legacy_level = model_registry.split_effort_suffix(legacy_model)
+        legacy_base = ""
+        if legacy_level:
+            backend = (
+                provider.capabilities.backend
+                if isinstance(provider, AcpProvider)
+                else await _configured_backend_for_slot(slot)
+            )
+            if backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+                legacy_base = split_base
+
+        def normalize_legacy_model() -> dict[str, str]:
+            if not legacy_base or slot.model != legacy_model:
+                return {}
+            slot.model = legacy_base
+            slot._dirty = True
+            return {"model": legacy_base}
+
+        if slot.reasoning_effort == effort and not legacy_base:
             return web.json_response({"ok": True, "reasoning_effort": effort})
         logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
 
-        provider = state.sessions.get_provider(session_key)
         _updated_live: bool | None = False
         if isinstance(provider, AcpProvider) and provider.supports_effort():
             # Guard against racing the in-flight prompt read loop: a live
@@ -9581,8 +9798,11 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 # This path's success point: the override is recorded on the
                 # slot now and pushed to the live session next turn.
                 slot.reasoning_effort = effort
+                normalized = normalize_legacy_model()
                 state.push_slots_update()
-                return web.json_response({"ok": True, "reasoning_effort": effort, "deferred": True})
+                return web.json_response(
+                    {"ok": True, "reasoning_effort": effort, "deferred": True, **normalized}
+                )
             # change_effort handles both backends and persists the per-model
             # override + overlay. "" clears the override → fall back to model
             # default (kiro: /effort with model default; claude: leave as-is).
@@ -9632,11 +9852,13 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # override. Commit the slot value (it is what the new binding's
             # next cold start reads) and report the rebind as a warning.
             slot.reasoning_effort = effort
+            normalized = normalize_legacy_model()
             state.push_slots_update()
             return web.json_response(
                 {
                     "ok": True,
                     "reasoning_effort": effort,
+                    **normalized,
                     "warning": "slot session was rebound during the switch; "
                     "the new binding applies on its next cold start",
                 }
@@ -9790,19 +10012,22 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     status=409,
                 )
             if teardown_incomplete:
+                normalized = normalize_legacy_model()
                 state.push_slots_update()
                 return web.json_response(
                     {
                         "ok": True,
                         "reasoning_effort": effort,
+                        **normalized,
                         "warning": _TEARDOWN_INCOMPLETE_WARNING,
                     }
                 )
         # Live-update and deferral paths commit here (the reset path already
         # committed before its reset, and assigning again is a no-op).
         slot.reasoning_effort = effort
+        normalized = normalize_legacy_model()
     state.push_slots_update()
-    return web.json_response({"ok": True, "reasoning_effort": effort})
+    return web.json_response({"ok": True, "reasoning_effort": effort, **normalized})
 
 
 async def api_chat_slot_reload(request: web.Request) -> web.Response:

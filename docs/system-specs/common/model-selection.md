@@ -223,6 +223,23 @@ its own once the cache refreshes with a list that carries it.
 - **Pickers** MUST list options from `GET /api/models`, the advertised set, never a
   static in-code list. A hand-maintained list offers models the account cannot run and
   hides the ones it can.
+- The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
+  the active ACP session's backend, effort support, and ordered effort levels. A
+  missing session answers `known: false`; the composer then uses its existing
+  model-name heuristic until ACP reports the session's actual options. The same
+  endpoint proxies a remote slot to its execution peer. A supported session gets
+  a separate effort button, using its advertised levels, whether the backend is
+  Claude, Codex, Pi, or another capable ACP harness. A session that reports no
+  effort support gets no effort control. The model picker never owns that slider.
+- Codex advertises `model[effort]` pairs, but its `model` config option accepts the
+  base ID and its `reasoning_effort` option accepts the level. The live capability
+  marks only backends in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` for pair grouping;
+  before the session exists, the configured backend ID supplies the same Codex
+  fallback. The pair shape alone is never sufficient. Existing pair pins display
+  as their base model; an unset effort control remains Default until the user
+  chooses an override. Picking a model stores the base ID; the backend's existing
+  effort reapply path keeps a slot override in force. Other backends' model IDs,
+  including Claude window suffixes such as `[1m]`, remain intact.
 - `dashboard.model_picker_hidden_models` is a presentation preference over that
   advertised set. It filters only the interactive ChatPage and ChatPane pickers;
   `auto` and each slot's active model remain visible. Settings defaults, role and

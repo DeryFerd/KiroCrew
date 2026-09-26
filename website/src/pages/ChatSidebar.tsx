@@ -78,7 +78,7 @@ import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBran
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
 import { DndActiveProbe, DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
-import { bySidebarOrder, collectFolderSubtreeIds, folderNameText } from '../utils/folderTree'
+import { bySidebarOrder, collectFolderSubtreeIds, coveredByHiddenAncestor, folderNameText } from '../utils/folderTree'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { PaletteBoost } from '../utils/sessionColors'
@@ -1949,13 +1949,20 @@ const SessionRow = memo(function SessionRow({
             title={i18nT('pages.chatSidebar.nesting_depth', { depth: conductor.depth })}
             data-testid={`conductor-depth-${rowIdentity}`}>&middot;{conductor.depth}</span>
         )}
+        {/* Both citation states name the SAME bent arrow, so both carry their name the
+         *  same way: `role="img"` with `aria-label` on the wrapper, and the glyph inside
+         *  marked decorative. An `aria-label` on the bare `<svg>` is not dependably
+         *  exposed — an `svg` element carries no image role of its own — so the name has
+         *  to sit on an element whose role admits one. Without it the row offers a reader
+         *  a shape and no fact: the arrow says a creator exists and never says which. */}
         {conductor.orphanOf != null && (
           <span className="inline-flex items-center text-muted shrink-0"
+            role="img"
+            aria-label={i18nT('pages.chatSidebar.opened_by_closed_session', { slot: conductor.orphanOf })}
             title={i18nT('pages.chatSidebar.opened_by_closed_session', { slot: conductor.orphanOf })}
             data-orphan-of={conductor.orphanOf}
             data-testid={`conductor-orphan-${rowIdentity}`}>
-            <CornerDownRight size={11} className="lucide-inline"
-              aria-label={i18nT('pages.chatSidebar.opened_by_closed_session', { slot: conductor.orphanOf })} />
+            <CornerDownRight size={11} className="lucide-inline" aria-hidden="true" />
           </span>
         )}
         {conductor.orphanOf == null && conductor.citesParent != null && (
@@ -1963,11 +1970,12 @@ const SessionRow = memo(function SessionRow({
           // nesting right now (search flattens every match to one level). Without it a
           // flattened child looks exactly like a session nobody opened.
           <span className="inline-flex items-center text-muted shrink-0"
+            role="img"
+            aria-label={i18nT('pages.chatSidebar.opened_by_session', { slot: conductor.citesParent })}
             title={i18nT('pages.chatSidebar.opened_by_session', { slot: conductor.citesParent })}
             data-cites-parent={conductor.citesParent}
             data-testid={`conductor-cites-parent-${rowIdentity}`}>
-            <CornerDownRight size={11} className="lucide-inline"
-              aria-label={i18nT('pages.chatSidebar.opened_by_session', { slot: conductor.citesParent })} />
+            <CornerDownRight size={11} className="lucide-inline" aria-hidden="true" />
           </span>
         )}
         {conductor.childCount > 0 && (
@@ -5743,16 +5751,7 @@ function ChatSidebar({
     if (!folderFilterActive) return m
     for (const f of folders) {
       if (isFolderHidden(f) || !filterHiddenFolders.has(f.id)) continue
-      // An ancestor already hidden ⇒ this folder's container is not rendered.
-      let cur = f.parent_id ? folders.find(p => p.id === f.parent_id) : undefined
-      const seen = new Set<string>([f.id])
-      let coveredByAncestor = false
-      while (cur && !seen.has(cur.id)) {
-        seen.add(cur.id)
-        if (filterHiddenFolders.has(cur.id)) { coveredByAncestor = true; break }
-        cur = cur.parent_id ? folders.find(p => p.id === cur!.parent_id) : undefined
-      }
-      if (coveredByAncestor) continue
+      if (coveredByHiddenAncestor(f, folders, filterHiddenFolders)) continue
       const key = f.parent_id || 'root'
       const list = m.get(key)
       if (list) list.push(f); else m.set(key, [f])
@@ -5767,6 +5766,43 @@ function ChatSidebar({
     () => [...hiddenByContainer.values()].flat().sort(bySidebarOrder),
     [hiddenByContainer],
   )
+
+  /** Folders the person's uncheck is withholding from THE LANE ON SCREEN, announced.
+   *
+   *  ONE number, because it is reported in three places at once — the funnel, the
+   *  filter menu's own Folders heading, and the board lane's notice — and two of
+   *  those sit on screen together.
+   *
+   *  `filterHiddenFolders.size` is the raw checkbox set and is the wrong number for
+   *  any of them: it counts a folder whose hidden ANCESTOR already took the whole
+   *  block away, and keeps counting while a search suspends the hide entirely. Both
+   *  announce rows as withheld that are either absent for another reason or not
+   *  absent at all.
+   *
+   *  `allHiddenFolders` is the wrong number too, and in the opposite direction, for a
+   *  BOARD: it drops a folder its own hide-when-empty attribute would remove, and a
+   *  board column draws a folder block whatever that attribute says
+   *  (`relevantFolders` filters on `isFolderFilteredOut` alone). So on a board the
+   *  uncheck does take that block away, and dropping it announces nothing while the
+   *  header disappears — the exact traceless hide this row exists to end. The other
+   *  lanes narrow by `isFolderHidden` themselves, so there the uncheck takes nothing
+   *  a reader would otherwise have seen, and counting it would over-report.
+   *
+   *  Hence one predicate and two scopes, not two unrelated counts. A count and not a
+   *  list, because nothing renders this population: the reveal rows draw from
+   *  `hiddenByContainer`, which is grouped by container and ordered for display.
+   */
+  const hiddenFolderCount = useMemo(() => {
+    if (!folderFilterActive) return 0
+    let n = 0
+    for (const f of folders) {
+      if (!filterHiddenFolders.has(f.id)) continue
+      if (!boardLaneActive && isFolderHidden(f)) continue
+      if (coveredByHiddenAncestor(f, folders, filterHiddenFolders)) continue
+      n += 1
+    }
+    return n
+  }, [folders, folderFilterActive, filterHiddenFolders, isFolderHidden, boardLaneActive])
 
   // Flat-view slot list: filteredSlots minus sessions in hidden folders —
   // EXCEPT while searching, where every match must stay reachable so a hidden
@@ -8046,7 +8082,7 @@ function ChatSidebar({
           style={{ paddingLeft: `${8 + depth * 12}px` }}
         >
           <DisclosureChevron open={open} size={11} />
-          <span>{n} {n === 1 ? i18nT('pages.chatSidebar.hidden_folder') : i18nT('pages.chatSidebar.hidden_folders')}</span>
+          <span>{i18nT('pages.chatSidebar.hidden_folder_count', { count: n })}</span>
         </button>
         {open && (
           <div className="opacity-70">
@@ -8825,21 +8861,27 @@ function ChatSidebar({
             )}
             <DropdownMenu open={filterSortOpen} onOpenChange={setFilterSortOpen}>
               <DropdownMenuTrigger asChild>
-                {/* The funnel carries the hide's only on-screen trace in a board.
-                    A board column draws no folder header, so it has no reveal row
-                    either: without a mark here, rows the person hid are simply
-                    absent, the hide survives a reload, and every later visit reads
-                    as sessions that disappeared. The tint says something is being
-                    withheld and the title says how much, so the menu holding the
-                    undo is the thing the eye is drawn to. */}
+                {/* The funnel holds the way back, so while a hide withholds rows its
+                    title says both that something is withheld and how much.
+
+                    Warn, not accent: the view toggle immediately beside it tints accent
+                    to mean "this lane is active", so one accent doing both jobs reads as
+                    the toggle's own state rather than as a population kept off screen.
+
+                    The count does NOT go in the accessible name. A button's name names
+                    the button; a count that changes under the reader belongs in content,
+                    and every lane draws it as content — a reveal row where there are
+                    folder headers to hang one from, the lane notice in a board. That also
+                    keeps the name stable for a reader navigating by control name. Both
+                    numbers read `hiddenFolderCount`, so they cannot disagree. */}
                 <FilterMenuButton
-                  title={filterHiddenFolders.size > 0
-                    ? `${i18nT('pages.chatSidebar.sort_filter_sessions')} - ${filterHiddenFolders.size} ${i18nT('pages.chatSidebar.hidden')}`
+                  title={hiddenFolderCount > 0
+                    ? i18nT('pages.chatSidebar.sort_filter_sessions_hidden', { count: hiddenFolderCount })
                     : i18nT('pages.chatSidebar.sort_filter_sessions')}
                   aria-label={i18nT('pages.chatSidebar.sort_and_filter_sessions')}
                   badge={filterCounts['unread']}
-                  className={filterHiddenFolders.size > 0 ? 'text-accent' : undefined}
-                  data-folder-hide-active={filterHiddenFolders.size > 0 ? String(filterHiddenFolders.size) : undefined}
+                  className={hiddenFolderCount > 0 ? 'text-warn' : undefined}
+                  data-folder-hide-active={hiddenFolderCount > 0 ? String(hiddenFolderCount) : undefined}
                 />
               </DropdownMenuTrigger>
               <FilterMenuContent align="end">
@@ -9167,8 +9209,8 @@ function ChatSidebar({
                       <DisclosureChevron open={!foldersShelved} size={12} />
                       <span className="flex-1">
                         {i18nT('pages.chatSidebar.folders')}
-                        {filterHiddenFolders.size > 0 && (
-                          <span className="normal-case tracking-normal"> · {filterHiddenFolders.size} {i18nT('pages.chatSidebar.hidden')}</span>
+                        {hiddenFolderCount > 0 && (
+                          <span className="normal-case tracking-normal"> &middot; {i18nT('pages.chatSidebar.hidden_folder_count', { count: hiddenFolderCount })}</span>
                         )}
                       </span>
                     </DropdownMenuItem>
@@ -9801,6 +9843,58 @@ function ChatSidebar({
                 {i18nT('pages.chatSidebar.remote_sessions_not_shown_in_board_view', { count: peerRowsHiddenFromBoard })}
               </span>
             </div>
+          )}
+          {/* The hide's trace in the board lane, as a row rather than as a tint.
+            *
+            * The other three lanes end a container with a reveal row, which a board
+            * cannot copy: a column draws no folder header for such a row to hang from,
+            * and a hidden folder is not a property of any one column anyway — its
+            * sessions scatter across all of them, so a per-column row would print the
+            * same count once per column. So it sits at the LANE level, beside the notice
+            * above that reports the other population a board declines to draw.
+            *
+            * A row and not just the funnel's tint, because the hide is persistent: it
+            * lives in localStorage and survives a reload, so a tint and a hover count are
+            * all a returning reader has to account for sessions that are simply fewer
+            * than they were. The honest reading of that is deletion.
+            *
+            * It is a button, and it opens the filter menu, because that menu holds the
+            * undo. It also UNSHELVES the menu's folder list on the way: that list is the
+            * way back and it is gated behind the shelf, so opening the menu over a
+            * rolled-up shelf lands the reader on a dense panel with no folders in it and
+            * the word on the button promises something that did not happen. The other
+            * lanes' row peeks the folders open in place; this is the same gesture as far
+            * as a board can carry it. */}
+          {hiddenFolderCount > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setFoldersShelved(false)
+                safeSetItem(FOLDERS_SHELVED_LS_KEY, '0')
+                setFilterSortOpen(true)
+              }}
+              title={i18nT('pages.chatSidebar.show_hidden_folders_from_board', { count: hiddenFolderCount })}
+              aria-label={i18nT('pages.chatSidebar.show_hidden_folders_from_board', { count: hiddenFolderCount })}
+              data-testid="board-hidden-folders"
+              data-hidden-folder-count={String(hiddenFolderCount)}
+              className="mx-2 mt-2 px-2 py-1.5 rounded-md bg-warn-subtle border border-warn/40 text-warn text-[11px] flex items-center gap-1.5 text-left cursor-pointer hover:bg-warn/20 transition-colors"
+            >
+              <EyeOff size={11} aria-hidden="true" className="shrink-0" />
+              <span className="min-w-0 truncate" data-testid="board-hidden-folders-count">
+                {i18nT('pages.chatSidebar.hidden_folder_count', { count: hiddenFolderCount })}
+              </span>
+              {/* The action, in VISIBLE text and not only in the name. A count plus a
+                *  glyph tells a sighted pointer-less reader that rows are withheld and
+                *  leaves them to guess the row is tappable, which is the hover-only
+                *  failure this row exists to end. `show` is the catalog's own word for
+                *  this affordance, so the 13 locales already carry it. The chevron is
+                *  decorative: the word beside it already says what happens. */}
+              <span className="ml-auto shrink-0 inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2"
+                data-testid="board-hidden-folders-action">
+                {i18nT('pages.chatSidebar.show')}
+                <ChevronRight size={11} aria-hidden="true" className="shrink-0" />
+              </span>
+            </button>
           )}
           <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-2 p-2" data-testid="column-strip">
             {orderedColumns.map((col, colIdx) => {

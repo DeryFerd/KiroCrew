@@ -1543,8 +1543,15 @@ def test_signing_secret_transient_publish_failure_never_creates_the_destination(
         "a transient publish failure created the destination anyway — a kill in "
         "that write window persists the 0-byte key this fix removes"
     )
-    # Nothing of ours is left in the config dir either.
-    assert list(tmp_path.iterdir()) == []
+    # No copy of ours is left either. The staging directory itself is expected --
+    # the publish creates it before staging and it is masked and fenced -- so what
+    # must be empty is the directory, not the data home.
+    assert [p.name for p in tmp_path.iterdir()] == [
+        ts._AUTH_STORE_STAGING_LEAF
+    ], "a failed publish left something other than the staging directory behind"
+    assert (
+        list((tmp_path / ts._AUTH_STORE_STAGING_LEAF).iterdir()) == []
+    ), "a staged copy of the signing key survived a failed publish"
 
 
 def test_signing_secret_persists_on_a_filesystem_without_hard_links(tmp_path, monkeypatch) -> None:
@@ -1641,8 +1648,8 @@ def test_signing_secret_failed_dir_sync_keeps_a_recoverable_name(tmp_path, monke
     So a genuine sync failure keeps the staging name as a recoverable second
     reference, and still returns the key that is on disk rather than degrading to
     an ephemeral secret (which would diverge from the persisted key). The kept
-    leftover is safe precisely because it ends in ``.tmp`` and so stays behind the
-    keystone fence.
+    leftover is safe precisely because it sits inside the masked, fenced staging
+    directory.
     """
     import errno as _errno
 
@@ -1653,7 +1660,7 @@ def test_signing_secret_failed_dir_sync_keeps_a_recoverable_name(tmp_path, monke
     def _failing_sync(path, **kwargs):  # type: ignore[no-untyped-def]
         # best_effort would swallow this; strict must let it surface here.
         assert not kwargs.get("best_effort"), (
-            "the publish must sync the directory STRICTLY — best_effort hides the "
+            "the publish must sync the directory STRICTLY -- best_effort hides the "
             "very EIO that makes dropping the second name unsafe"
         )
         raise OSError(_errno.EIO, "simulated: device refused the directory sync")
@@ -1665,11 +1672,18 @@ def test_signing_secret_failed_dir_sync_keeps_a_recoverable_name(tmp_path, monke
     key_file = tmp_path / ts._SECRET_KEY_FILE
     assert key_file.exists(), "the key was not published"
     assert key_file.read_bytes() == secret, (
-        "returned an ephemeral secret while a valid key sits on disk — the "
+        "returned an ephemeral secret while a valid key sits on disk -- the "
         "divergence the exclusive publish exists to prevent"
     )
 
-    leftovers = [p for p in tmp_path.iterdir() if p.name != ts._SECRET_KEY_FILE]
+    # The recoverable second name lives in the staging directory, not beside the
+    # key: the data-home root is sandbox-visible, so a leftover there would be a
+    # readable copy of the signing key.
+    staging = tmp_path / ts._AUTH_STORE_STAGING_LEAF
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [ts._SECRET_KEY_FILE, ts._AUTH_STORE_STAGING_LEAF]
+    ), "a copy of the signing key was left loose in the data-home root"
+    leftovers = list(staging.iterdir())
     assert len(leftovers) == 1, (
         "a failed directory sync must keep exactly one recoverable second name, "
         f"found {[p.name for p in leftovers]}"
@@ -1680,10 +1694,20 @@ def test_signing_secret_failed_dir_sync_keeps_a_recoverable_name(tmp_path, monke
         "the kept name is a separate inode, so it is a second COPY of the signing "
         "key rather than a second name for it"
     )
-    # And it is still fenced, which is what makes keeping it acceptable.
+    # And it is still fenced, which is what makes keeping it acceptable. Asserted
+    # where the staging directory REALLY sits: the fence resolves its targets from
+    # the real crew-home prefixes, so a tmp_path candidate would prove nothing.
     from kiro_crew import security
 
-    assert kept.name.endswith(security._KEYSTONE_ARTIFACT_SUFFIXES)
+    targets = security._home_dir_targets(
+        tuple(d for d in security.sensitive_home_dirs() if d.endswith(ts._AUTH_STORE_STAGING_LEAF))
+    )
+    assert targets, "the fence resolved no staging directory, so nothing is protected"
+    for target in sorted(targets):
+        assert security.is_sensitive_path(os.path.join(target, kept.name)), (
+            f"a leftover {kept.name!r} in {target} would not be fenced -- it holds a "
+            "full copy of the signing key and agent tools could read it"
+        )
 
 
 def test_signing_secret_staging_file_is_covered_by_the_keystone_fence(
@@ -1691,20 +1715,29 @@ def test_signing_secret_staging_file_is_covered_by_the_keystone_fence(
 ) -> None:
     """A leftover staging file must be fenced exactly like the key it copies.
 
-    The staging sibling holds the FULL signing key until the publish link lands,
-    and a kill between that link and the cleanup unlink leaves it on disk. The
-    keystone fence in ``security.py`` protects a publish artifact by SHAPE — a
-    direct child of a keystone leaf's own directory whose name ends in one of
-    ``_KEYSTONE_ARTIFACT_SUFFIXES`` — so a staging name outside those suffixes
-    leaves a readable copy of the key for an agent tool to fetch and forge tokens
-    with.
+    The staged file holds the FULL signing key until the publish link lands, and a
+    kill between that link and the cleanup unlink leaves it on disk. It is
+    protected by living inside ``_AUTH_STORE_STAGING_LEAF``, which
+    ``security.paths`` fences as a whole DIRECTORY -- so every name inside it is
+    covered, present and future.
 
-    Asserted against the real predicate rather than against the literal suffix, so
-    the coupling survives a rename on either side. The name is tested in the
-    directory the key actually lives in: the fence resolves its parent set from
-    the real crew-home prefixes, so pointing ``KIROCREW_HOME`` at a temp dir would
-    move the key without moving the fence and prove nothing.
+    Two things are asserted, because either alone can be true while the key is
+    exposed. First, the publish really does stage INSIDE that directory: a temp
+    beside the key would sit in the data-home root, which is sandbox-visible and
+    same-uid writable, and no suffix rule makes that unreachable to a spawned
+    shell. Second, the fence really does cover that path -- asserted where the
+    directory REALLY sits, since the fence resolves its targets from the real
+    crew-home prefixes and a ``tmp_path`` candidate would prove nothing.
+
+    The no-suffix control is the point of the third assertion: the fence must
+    cover a name that ends in no keystone suffix at all. That is what
+    distinguishes the directory entry now doing the work from the old
+    ``_KEYSTONE_ARTIFACT_SUFFIXES`` shape rule, which reached only a direct child
+    of a keystone leaf's own directory and stopped applying when the temp moved
+    down one level.
     """
+    from pathlib import Path
+
     from kiro_crew import security
     from kiro_crew.dashboard import token_secret as ts
 
@@ -1721,45 +1754,387 @@ def test_signing_secret_staging_file_is_covered_by_the_keystone_fence(
     monkeypatch.undo()
 
     assert captured, "the publish never linked, so no staging name was observed"
-    staged_name = os.path.basename(captured[0])
-    assert staged_name.endswith(
-        security._KEYSTONE_ARTIFACT_SUFFIXES
-    ), f"staging name {staged_name!r} is outside the keystone artifact suffixes"
+    staged = Path(captured[0])
+    assert staged.parent == tmp_path / ts._AUTH_STORE_STAGING_LEAF, (
+        f"the key was staged at {staged} instead of inside "
+        f"{ts._AUTH_STORE_STAGING_LEAF!r}; a temp in the data-home root is visible "
+        "in every agent sandbox and link(2)-able while the write is in flight"
+    )
 
-    # Now ask the fence about that same name where the key really sits.
-    parents = security._home_dir_targets(security._KEYSTONE_ARTIFACT_PARENTS)
-    assert parents, "the fence resolved no keystone artifact parents"
-    for parent in sorted(parents):
-        candidate = os.path.join(parent, staged_name)
-        assert security._is_keystone_publish_artifact(candidate), (
-            f"a leftover {staged_name!r} in {parent} would not be fenced — it "
+    targets = security._home_dir_targets(
+        tuple(d for d in security.sensitive_home_dirs() if d.endswith(ts._AUTH_STORE_STAGING_LEAF))
+    )
+    assert targets, "the fence resolved no staging directory, so nothing is protected"
+    for target in sorted(targets):
+        assert security.is_sensitive_path(os.path.join(target, staged.name)), (
+            f"a leftover {staged.name!r} in {target} would not be fenced -- it "
             "holds a full copy of the signing key and agent tools could read it"
+        )
+        # Control: coverage must not depend on the filename's suffix.
+        assert security.is_sensitive_path(os.path.join(target, "leftover-with-no-suffix")), (
+            f"{target} is fenced only for suffixed names, so the protection is still "
+            "the old shape rule rather than the directory entry"
         )
 
 
 def test_signing_secret_publish_leaves_no_staging_file_behind(tmp_path, monkeypatch) -> None:
-    """The staging sibling is this process's private file and must not survive.
+    """The staged file is this process's private file and must not survive.
 
     A leftover staging file is inert (the key is published under its own name)
-    but it holds a full copy of the signing secret, so the config directory must
-    contain exactly the key file after a successful publish -- and after a
-    publish this process LOST to a sibling, where its candidate is dropped
-    rather than installed.
+    but it holds a full copy of the signing secret, so after a successful publish
+    the staging directory must be EMPTY -- and equally after a publish this
+    process LOST to a sibling, where its candidate is dropped rather than
+    installed.
+
+    The staging DIRECTORY itself is expected to remain: it is masked, fenced and
+    precreated by the sandbox materialiser, so it is a fixture of the data home
+    rather than an artifact of one write. What must not remain is a file in it.
     """
     from kiro_crew.dashboard import token_secret as ts
 
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     key_file = tmp_path / ts._SECRET_KEY_FILE
+    staging = tmp_path / ts._AUTH_STORE_STAGING_LEAF
+
+    expected_home = sorted([ts._SECRET_KEY_FILE, ts._AUTH_STORE_STAGING_LEAF])
 
     secret = ts._load_or_create_secret()
     assert key_file.read_bytes() == secret
-    assert [p.name for p in tmp_path.iterdir()] == [ts._SECRET_KEY_FILE]
+    assert sorted(p.name for p in tmp_path.iterdir()) == expected_home
+    assert [
+        p.name for p in staging.iterdir()
+    ] == [], "a staged file survived the publish; it holds a full copy of the signing key"
 
     # Now the losing path: a key already exists, so a second loader must read it
     # and leave nothing of its own candidate behind.
     again = ts._load_or_create_secret()
     assert again == secret, "second loader diverged from the persisted key"
-    assert [p.name for p in tmp_path.iterdir()] == [ts._SECRET_KEY_FILE]
+    assert sorted(p.name for p in tmp_path.iterdir()) == expected_home
+    assert [p.name for p in staging.iterdir()] == [], "the losing loader left its candidate staged"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes only")
+def test_signing_secret_survives_a_staging_dir_mode_it_cannot_narrow(tmp_path, monkeypatch) -> None:
+    """A staging directory whose mode will not narrow must not block the key.
+
+    A group- or world-accessible staging directory is worth closing, because
+    another local account can then list the publish temps' names, so the
+    validator chmods it. What it must not do is REFUSE when the chmod does not
+    stick, because the filesystems where it cannot stick are whole classes rather
+    than broken hosts: CIFS applies its mount-wide ``dir_mode`` and disregards
+    chmod, and vfat/exFAT carry no POSIX mode at all.
+
+    The validator runs BEFORE the creation loop's retry budget, so a raise there
+    escapes to the outer handler, which degrades to an ephemeral secret and
+    writes nothing. On such a host no boot would ever persist a signing key, so
+    every restart would invalidate every dashboard session. A read bit leaks temp
+    NAMES and grants no substitution, so it is the side of the boundary that
+    warns. A group- or world-WRITE bit is refused instead, and
+    ``test_signing_secret_refuses_a_group_writable_staging_dir`` pins that half.
+
+    The load-bearing assertion is therefore that the key reached disk. The
+    warning is asserted too, so the weaker outcome is at least not silent.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    staging = tmp_path / ts._AUTH_STORE_STAGING_LEAF
+    staging.mkdir(parents=True, exist_ok=True)
+    os.chmod(staging, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the wide mode IS this test's input: 0o755 carries no group/world WRITE bit, which is the boundary the validator warns on rather than refuses. lockdown-ok: a tmp_path directory, not a published artifact.  # noqa: E501  # fmt: skip
+
+    templates: list[str] = []
+    monkeypatch.setattr(ts.logger, "warning", lambda msg, *a, **kw: templates.append(str(msg)))
+    # A filesystem that rejects the call outright, as vfat and exFAT do. The
+    # payload write tolerates this already: both call sites pass
+    # restrict_on_error="warn" for the same reason.
+    monkeypatch.setattr(os, "chmod", _refusing_chmod)
+
+    secret = ts._load_or_create_secret()
+
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert key_file.exists(), (
+        "a staging directory whose mode could not be narrowed stopped the signing key "
+        "from being persisted at all; on such a filesystem every restart would "
+        "invalidate every dashboard session"
+    )
+    assert key_file.read_bytes() == secret, "the returned secret is not the persisted one"
+    assert any("could not be narrowed" in t for t in templates), (
+        "the un-narrowable wide mode was accepted silently; it lets other local "
+        "accounts list the publish temps' names, so it must be reported"
+    )
+
+
+def _refusing_chmod(*_args, **_kwargs) -> None:
+    """A ``chmod`` that the filesystem rejects, as vfat and exFAT do."""
+    raise OSError(errno.EPERM, "filesystem does not support changing modes")
+
+
+def test_signing_secret_staging_dir_is_locked_to_its_owner_on_both_platforms(
+    tmp_path, monkeypatch
+) -> None:
+    """The lockdown must run on Windows too, where no mode test can see the ACL.
+
+    All three POSIX checks are mode-based, so a Windows staging directory a foreign
+    principal can write would pass unexamined and that principal could replace a staged
+    file between the write and the publish link. The directory-shaped helper is what
+    expresses owner-only on both platforms, so the assertion is that it is CALLED.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    called: list[str] = []
+    monkeypatch.setattr(
+        ts.platform_compat, "restrict_dir_to_owner", lambda p: called.append(str(p))
+    )
+
+    staging = tmp_path / ts._AUTH_STORE_STAGING_LEAF
+    assert ts.auth_store_staging_dir(tmp_path) == staging
+    assert called == [str(staging)], (
+        "the staging directory was not locked to its owner; on Windows that is the only "
+        "check there is, since every mode test is POSIX-gated"
+    )
+
+
+def test_signing_secret_staging_dir_refuses_when_windows_lockdown_fails(
+    tmp_path, monkeypatch
+) -> None:
+    """On Windows a lockdown that fails is a refusal, because nothing else can judge it.
+
+    On POSIX the mode split below it can see what survived and separates substitution from
+    a name leak. On Windows there is no such reading, so failing to lock is the whole
+    signal and it fails closed.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    def _refusing_lockdown(_path):
+        raise OSError(errno.EPERM, "cannot write the DACL")
+
+    monkeypatch.setattr(ts.platform_compat, "restrict_dir_to_owner", _refusing_lockdown)
+    monkeypatch.setattr(ts.os, "name", "nt")
+
+    with pytest.raises(OSError) as caught:
+        ts.auth_store_staging_dir(tmp_path)
+    assert caught.value.errno == errno.EPERM
+    assert "locked to its owner" in str(
+        caught.value
+    ), "the refusal must say what could not be done, or an operator cannot act on it"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes only")
+def test_signing_secret_refuses_a_group_writable_staging_dir(tmp_path, monkeypatch) -> None:
+    """A group- or world-WRITABLE staging directory must be refused, not narrowed-and-warned.
+
+    A read bit only lets another local account list the publish temps' names. A WRITE bit
+    lets it replace the staged file between the payload write and the publish ``os.link``,
+    which installs a signing key of its choosing as the one signing every dashboard token,
+    with nothing downstream able to notice.
+
+    So the refusal is the assertion. What it must NOT do is publish in place instead: that
+    writer creates the destination empty and fills it afterwards, so it would trade a
+    one-``chmod`` misconfiguration for a zero-byte signing key on a host that was publishing
+    atomically. The refusal degrades to an ephemeral secret for this process and leaves the
+    stored file exactly as it was -- which for a first-ever publish means no file at all, and
+    for an upgraded host means yesterday's key still validates yesterday's sessions.
+    ``test_signing_secret_persists_in_place_when_the_home_cannot_stage_at_all`` pins the other
+    side: a home that genuinely cannot stage DOES reach the in-place writer, because there the
+    alternative is no persisted key on any boot.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    staging = tmp_path / ts._AUTH_STORE_STAGING_LEAF
+    staging.mkdir(parents=True, exist_ok=True)
+    os.chmod(staging, 0o777)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the world-writable mode IS this test's input, and refusing it is what is under test. lockdown-ok: a tmp_path directory, not a published artifact.  # noqa: E501  # fmt: skip
+    monkeypatch.setattr(os, "chmod", _refusing_chmod)
+
+    with pytest.raises(ts.AuthStoreStagingRefused) as caught:
+        ts.auth_store_staging_dir(tmp_path)
+    assert caught.value.errno == errno.EPERM
+    assert "WRITABLE" in str(caught.value), (
+        "the refusal must say which bit it refused on, or an operator cannot tell it from "
+        "the read-bit case that only warns"
+    )
+
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert not key_file.exists(), "the fixture already had a key, so nothing below discriminates"
+
+    secret = ts._load_or_create_secret()
+
+    assert not key_file.exists(), (
+        "the refusal published a key in place anyway; that writer creates the destination "
+        "empty and fills it afterwards, so a kill in that window leaves a zero-byte signing "
+        "key -- bought against a misconfiguration one chmod fixes"
+    )
+    assert len(secret) >= ts._MIN_KEY_BYTES, (
+        "no usable secret was returned at all; the refusal degrades to an ephemeral secret "
+        "for this process, it does not fail the gateway"
+    )
+
+    stored = b"p" * ts._MIN_KEY_BYTES
+    key_file.write_bytes(stored)
+    assert ts._load_or_create_secret() == stored, (
+        "an upgraded host's stored key was not used; the staging refusal is about publishing "
+        "a NEW key, not about reading the current one"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes only")
+def test_signing_secret_persists_in_place_when_the_home_cannot_stage_at_all(
+    tmp_path, monkeypatch
+) -> None:
+    """A home that cannot stage still gets a persisted key, which is the other direction.
+
+    A non-directory occupying the staging name is not a substitution risk, it is an obstruction
+    -- and the in-place writer needs no staging directory, so refusing to use it here would mean
+    no boot ever persists a key and every restart invalidates every session. This is why the
+    permission refusal carries its own exception type rather than being told apart by errno at
+    the call site.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    blocker = tmp_path / ts._AUTH_STORE_STAGING_LEAF
+    blocker.write_text("not a directory\n", encoding="utf-8")
+
+    with pytest.raises(OSError) as caught:
+        ts.auth_store_staging_dir(tmp_path)
+    assert caught.value.errno == errno.ENOTDIR
+    assert not isinstance(caught.value, ts.AuthStoreStagingRefused), (
+        "an unusable home was raised as a permission refusal, which would degrade the key to "
+        "an ephemeral secret on every boot instead of persisting one"
+    )
+
+    secret = ts._load_or_create_secret()
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert key_file.exists(), (
+        "a home that cannot stage stopped the signing key from being persisted at all, "
+        "although the in-place writer needs no staging directory"
+    )
+    assert key_file.read_bytes() == secret, "the returned secret is not the persisted one"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes only")
+def test_signing_secret_readable_staging_dir_is_not_refused(tmp_path, monkeypatch) -> None:
+    """The read-bit side of the same boundary stays a warning, so the mount class still works.
+
+    ``dir_mode=0755`` is the CIFS/vfat default rather than a hostile setting, and it grants
+    no substitution. Refusing it would fail the publish on an ordinary mount.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    staging = tmp_path / ts._AUTH_STORE_STAGING_LEAF
+    staging.mkdir(parents=True, exist_ok=True)
+    os.chmod(staging, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the read-only-wide mode IS this test's input. lockdown-ok: a tmp_path directory, not a published artifact.  # noqa: E501  # fmt: skip
+    monkeypatch.setattr(os, "chmod", _refusing_chmod)
+
+    assert ts.auth_store_staging_dir(tmp_path) == staging, (
+        "a group-readable staging directory was refused; only a WRITE bit permits the "
+        "substitution the refusal exists to stop"
+    )
+
+
+def test_signing_secret_a_recovered_staging_failure_does_NOT_unlock_the_in_place_create(
+    tmp_path, monkeypatch
+) -> None:
+    """The in-place path is for a home that cannot stage, not one that faltered once.
+
+    ``_create_key_in_place`` creates the destination EMPTY and writes afterwards, so it
+    carries the truncation window the staging publish exists to remove: a termination in that
+    gap leaves a short key at the real name and poisons every later boot. The surrounding
+    policy admits it only where the alternative is no persisted key at all -- a filesystem
+    that genuinely cannot hard-link.
+
+    A staging lookup that fails once and then succeeds is not that filesystem. If its flag
+    still speaks for the loop, any home that recovered gets the truncation window handed to
+    it, so a LATER link failure that should have degraded to an ephemeral secret instead
+    writes the real name.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+
+    real_staging = ts.auth_store_staging_dir
+    staging_calls: list[int] = []
+
+    def _fail_once(home):  # type: ignore[no-untyped-def]
+        staging_calls.append(1)
+        if len(staging_calls) == 1:
+            raise OSError(errno.EAGAIN, "staging directory briefly unavailable")
+        return real_staging(home)
+
+    def _link_always_fails(*_a, **_k):  # type: ignore[no-untyped-def]
+        # NOT one of _LINK_UNSUPPORTED_ERRNOS: EPERM and friends say the filesystem cannot
+        # link at all, which unlocks the in-place path on its own merits and would hide the
+        # thing under test. EBUSY is the transient class, so the only route left to the
+        # in-place create is a staging flag that outlived its failure.
+        raise OSError(errno.EBUSY, "link target busy")
+
+    in_place_calls: list[int] = []
+    real_in_place = ts._create_key_in_place
+
+    def _counting_in_place(key_path):  # type: ignore[no-untyped-def]
+        in_place_calls.append(1)
+        return real_in_place(key_path)
+
+    monkeypatch.setattr(ts, "auth_store_staging_dir", _fail_once)
+    monkeypatch.setattr(ts, "_create_key_in_place", _counting_in_place)
+    monkeypatch.setattr(ts.os, "link", _link_always_fails)
+
+    ts._load_or_create_secret()
+
+    assert len(staging_calls) >= 2, (
+        "staging never recovered, so this test is measuring the link-less case instead of the "
+        "recovered one"
+    )
+    assert in_place_calls == [], (
+        "a staging failure that had already recovered still unlocked the in-place create, so "
+        "a home that merely faltered once is handed the truncation window the staging publish "
+        "exists to remove"
+    )
+
+
+def test_signing_secret_retries_a_transient_staging_dir_failure(tmp_path, monkeypatch) -> None:
+    """A staging-directory failure must be retried, not escape the budget.
+
+    ``auth_store_staging_dir`` is resolved INSIDE the creation loop. It can fail
+    for reasons that pass on the next attempt -- a sibling gateway creating the
+    same directory, a Windows sharing violation, a mount briefly unavailable --
+    and the loop already absorbs exactly that class of failure for the payload
+    write and for the publish link.
+
+    Resolved outside the loop it is a single point of failure: the OSError
+    escapes, reaches the function's outer handler, and that handler degrades to
+    an EPHEMERAL secret having written nothing. One transient miss at boot then
+    costs the host its persisted signing key, which is why the discriminating
+    assertion is that the key is on disk after a first-attempt failure.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+
+    real = ts.auth_store_staging_dir
+    calls: list[int] = []
+
+    def _fail_once(home):  # type: ignore[no-untyped-def]
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError(errno.EAGAIN, "staging directory briefly unavailable")
+        return real(home)
+
+    monkeypatch.setattr(ts, "auth_store_staging_dir", _fail_once)
+
+    secret = ts._load_or_create_secret()
+
+    assert len(calls) >= 2, (
+        "the staging-directory failure was never retried, so it is not inside the "
+        "creation loop's retry budget"
+    )
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    assert key_file.exists(), (
+        "a transient staging-directory failure escaped the retry budget and left no "
+        "persisted key, so the gateway would sign with an ephemeral secret"
+    )
+    assert key_file.read_bytes() == secret, "the returned secret is not the persisted one"
 
 
 def test_signing_secret_binary_write_survives_windows_text_mode(tmp_path, monkeypatch) -> None:

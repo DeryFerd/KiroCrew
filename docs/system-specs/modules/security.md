@@ -78,12 +78,32 @@ denies, which are path rules rather than mounts and hold for a name that does no
 yet, so whether a symlinked leaf there resolves outside the denied subpath is a separate
 question this pass does not answer.
 
-Two exceptions are deliberate and each has a test asserting it is NOT refused. `.env`, the
-operator's hand-authored channel-credential file and the clearest dotfile-manager case in
-the list. And the extra-hardlink shape for every leaf, which is WARNED rather than refused:
-a hardlink does not make the masked NAME replaceable, and `rsync --link-dest` and
-hardlinking snapshot tools leave one behind on hosts whose backups are working correctly.
-Neither exception is silent, and that is part of the decision rather than an accident: a
+One exception is deliberate and has a test asserting it is NOT refused: a SYMLINKED `.env`,
+the operator's hand-authored channel-credential file and the clearest dotfile-manager case
+in the list.
+
+The extra-hardlink shape is split per leaf rather than tolerated everywhere.
+`sandbox._CREW_HARDLINK_REFUSED_LEAVES` REFUSES the spawn for the leaves whose bytes are a
+usable secret off this host on their own — the token signing key, the refresh-token chain
+state, the auth SQLite store with its WAL, SHM and journal sidecars, `.env`, the
+md-notebook access token, the Mission Control secrets store, and the three browser session
+leaves — and every other masked leaf keeps the WARNING, pinned per leaf so the boundary
+fails a test rather than drifting. The split is weighing a cost that the refusing side
+pays: `st_nlink` reports that a second name EXISTS and not where it is, so refusing also
+refuses a link `rsync --link-dest` or a hardlinking snapshot tool left OUTSIDE the sandbox,
+where it is harmless. For a credential leaf that is the right trade and the same one
+`_refuse_unless_sole_regular_link` already makes for the live-target pointer, and it is not
+left to arrive as a failed spawn — `sandbox.masked_credential_leaf_aliases()` reports the
+condition in `kirocrew doctor` first, in the refusal's own words (see [cli](cli.md),
+*Doctor Checks*). For a leaf masked only so an agent cannot WRITE it, its reader
+re-validates the content and a host-wide spawn outage is not proportionate to a write
+alias. `.env` sits on the refusing side even though its symlink is tolerated: that
+tolerance exists for the layout a dotfile manager produces, and chezmoi and stow produce a
+symlink or a copy, never a hard link. Only a REGULAR FILE can carry a second hard link —
+`link(2)` refuses a directory — so every directory leaf is outside this decision by shape
+rather than by judgement.
+
+Nothing here is silent, and that is part of the decision rather than an accident: a
 tolerated leaf is VISITED and logged, because excluding it from the walk would reproduce on
 the credential leaf exactly the silence the pass exists to end. The warnings are emitted by
 this pass rather than by `_warn_if_alias_backed`, which never runs over these leaves, and
@@ -98,6 +118,57 @@ sandboxed spawn on the host. That case warns too.
 `scratch` and `backup` were checked for a supported second name and refuse: each resolves
 to one managed path (`agent_scratch.scratch_root()` is `config_dir() / "scratch"`) with no
 override, so a link there is not a relocation the product offers.
+
+Masking a credential leaf as a FILE leaves its publish temp to account for separately,
+because a mask covers a path and the temp has a different one. The gateway's two auth
+stores — `token_signing.key` and `refresh_chains.json` — publish through
+`auth-store-staging`, a direct child of the data home that is masked
+(`sandbox._CREW_HIDDEN_LEAVES`), precreated so a sandbox spawned before the first write does
+not watch the directory appear (`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`), and fenced from the
+agent file tools (`security.paths._CREW_SECRET_LEAVES`) — all three as whole DIRECTORY
+entries, so every temp name inside is covered without a per-name decision. Staged beside
+the leaf instead, the temp sits in the data-home root, which is sandbox-visible and same-uid
+writable, and it holds the full key or chain state for the whole write: an agent listing
+that directory can `link(2)` it and keep reading after the publish rename. The hardlink pass
+above cannot see that window, because it runs before a spawn and the window opens during
+one. This is the same treatment, and the same reason, as `live-target-staging`,
+`md-notebook-staging` and `aws-control-staging`. The staging directory is validated rather
+than trusted on each publish: a symlink or non-directory is refused, and so is a group- or
+world-WRITABLE directory whose mode `chmod` cannot narrow, because another local account
+could otherwise replace the staged file between the payload write and the publish link and
+install a signing key of its choosing. A directory that is merely group- or world-READABLE
+is narrowed with `chmod` and warned about when that does not stick: a read bit leaks the
+temps' names and grants no substitution, and it is the `dir_mode=0755` default of a real
+mount class. Refusing costs no persisted key, because a caller whose retry budget the
+refusal exhausts reaches its own in-place fallback.
+
+A temp written before that directory existed is an artefact already on disk, which
+masking forward cannot reach, so both launchers sweep
+`.token_signing.key.*.tmp` from every crew-home spelling
+(`sandbox._sweep_legacy_auth_store_temps`) and refuse the spawn if one cannot be removed.
+A match is only removed once it is known not to be the key inode's last name: with the key
+present at its own name and a different inode it is removed outright; sharing the key's inode
+it gets `fsync_dir` on the root first, refusing where the device refuses that; and with the
+key ABSENT nothing is removed and the spawn PROCEEDS with the temp retained and reported as
+exposed, because that state cannot be told apart
+from a staged write that never published, so removing risks destroying a key an operator can
+still recover by renaming while leaving it would hand the agent a cleartext key. Refusing there
+is the third option and it is the one not taken: the absent-key state is reachable in a crew home
+the install does not use, which is masked by nothing while it is absent and therefore creatable
+from inside a sandbox, so a refusal would let the governed process stop every launch on the host.
+The `SECURITY:` warning names both recoveries on every spawn, `kirocrew doctor` lists the
+condition, and the next start mints a fresh key after which this sweep removes the temp outright.
+That sweep is bounded to names carrying the leaf, and the bound is load-bearing rather than
+conservative: the data home is shared and `atomic_write` stages `tmp<random>.tmp` there for
+unrelated stores, so a wider pattern would unlink another component's in-flight temp between
+its `mkstemp` and its rename. A pre-upgrade `refresh_chains.json` temp carries that
+leaf-less name and so cannot be told apart from a live one, so it is not swept. The
+keystone-artifact suffix rule covers a `.tmp` or `.lock` name in a keystone leaf's own
+directory, but it lives in `security.paths` and gates the agent's FILE TOOLS only: no OS
+mask binds a `tmp<random>.tmp` name in the sandbox-visible data-home root, so a shell inside
+the namespace can open one and read the consumed-JTI, revoked-chain and `chain_peers` state
+it holds. That is a stated residual, not a closed hole. It affects only a home carrying a
+temp from the earlier layout, nothing recreates one, and removing the file closes it.
 
 Memory V2 separates members' learning and work context; it does not promise
 confidentiality between agents running as the same host operator. One stable

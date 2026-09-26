@@ -196,6 +196,11 @@ def _run(
         # the carve-out tests inject their own entry.
         "WRITABLE_DIRS": list(writable_dirs or []),
         "SENSITIVE_FILES": [str(lone)],
+        # Empty by default for the same reason as WRITABLE_DIRS: an entry here makes the
+        # region refuse before any mount when its path is absent or single-linked, which
+        # would end the run before the call numbering above is exercised. The alias tests
+        # inject their own entry.
+        "FAIL_CLOSED_FILE_MASKS": [],
         "SSH_DIR": str(ssh),
         "SSH_KNOWN_HOSTS": str(ssh / "known_hosts"),
         "HIDE_SSH": True,

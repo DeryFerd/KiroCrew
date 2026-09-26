@@ -685,6 +685,27 @@ _CREW_SECRET_LEAVES: list[str] = [
     "file-delivery-consent-pending",
     "token_signing.key",
     "refresh_chains.json",
+    # The staging directory the two leaves above publish through. Both are masked as
+    # individual FILES in the data-home root, and a mask covers a PATH, so a temp staged
+    # BESIDE either of them sits in that root under a name no mask covers -- readable in
+    # any agent sandbox, and ``link(2)``-able by a same-uid agent during the write. The
+    # temp holds the FULL signing key or chain state for the whole write, so that window
+    # is a forged-token path, and a crash between write and publish leaves the same bytes
+    # on disk indefinitely.
+    #
+    # Named as the whole DIRECTORY, like ``md-notebook-staging``, ``live-target-staging``
+    # and ``aws-control-staging`` above: the ``startswith(target + os.sep)`` rule then
+    # covers every temp name inside it, present and future. The keystone-artifact suffix
+    # rule below does NOT reach these temps -- it covers a direct child of a keystone
+    # leaf's own directory, and a staged temp sits one level below that -- so this entry
+    # is what protects them, and it is the stronger of the two: it covers a leftover
+    # whatever it is named, not only one ending in ``.tmp``.
+    #
+    # A TOP-LEVEL leaf, not a path under another directory, so no agent-writable ancestor
+    # can be renamed out from under it. The gateway process is the only writer and it
+    # opens these paths directly rather than through this gate, so publishing keeps
+    # working.
+    "auth-store-staging",
     ".local_secret",
     # Durable channel transport state: Teams' conversation -> serviceUrl and
     # identity -> conversation maps, and Telegram's getUpdates cursor. Two shapes of

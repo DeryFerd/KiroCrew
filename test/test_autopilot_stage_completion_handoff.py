@@ -2256,3 +2256,89 @@ async def test_cancelled_plan_discards_retained_stage_retry(tmp_path, monkeypatc
 
     assert started == []
     assert not any(entry.get("kind") == SYNTHETIC_RECOVERY_KIND for entry in slot._queue)
+
+
+@pytest.mark.asyncio
+async def test_unconsumed_stage_pauses_when_settlement_releases_the_boundary(tmp_path, monkeypatch):
+    """Only the stage turn's own consumption may advance the loop past a stage."""
+    from kiro_crew.dashboard.chat import _stage_loop
+    from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND
+
+    recovery = "[SYSTEM] retry the unconsumed stage input"
+    state = _make_state(tmp_path)
+    state.subagents = _StageDeliveryManager()
+    slot = state.get_or_create_slot("released-boundary-pause", mode="orchestrator")
+    slot._stage_titles = ["Collect", "Verify"]
+    slot._plan_goal = "Collect then verify"
+    slot._auto_run = True
+    order: list[str] = []
+
+    async def _mock_run_chat(_state, _slot, message, **kwargs):
+        if "Execute Stage 1 of 2 now" in message:
+            order.append("stage-1-unconsumed")
+            retry_id = _slot.queue_insert(
+                0,
+                recovery,
+                kind=SYNTHETIC_RECOVERY_KIND,
+                meta=_owned_stage_meta(_slot),
+                on_consumed=kwargs.get("_on_consumed"),
+            )
+            _slot.stage_boundary.retry_queue_id = retry_id
+            return
+        if "Execute Stage 2 of 2 now" in message:
+            order.append("stage-2")
+            _mark_consumed(kwargs, _slot)
+            return
+        raise AssertionError(f"unexpected direct turn: {message[:80]}")
+
+    async def _release_without_consuming(_state, _slot):
+        entry = _slot.queue_pop(0)
+        assert entry["content"] == recovery
+        order.append("stage-1-recovery")
+        # A release retires the boundary while the retry drains. A released
+        # boundary reports consumption, so the boundary field describes no
+        # single stage turn and cannot decide whether this stage ran.
+        _slot.stage_boundary.clear()
+        return True
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn",
+        _release_without_consuming,
+    )
+
+    await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), timeout=5)
+
+    assert slot.stage_boundary.consumed is True
+    assert order == ["stage-1-unconsumed", "stage-1-recovery"]
+    assert slot._auto_run is False
+
+
+@pytest.mark.asyncio
+async def test_settlement_wait_exhaustion_halts_the_plan(tmp_path):
+    """Settlement that never reaches quiescence stops on its own wait budget."""
+    from kiro_crew.context_management import OrchestrationTracker
+    from kiro_crew.dashboard.chat_orchestrator import _settle_stage_delivery
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("settle-wait-exhausted", mode="orchestrator")
+    slot._in_stage_execution = True
+    slot._auto_run = True
+    slot.stage_boundary.arm(1, consumed=False)
+    manager = MagicMock()
+    manager.running_agents_for.return_value = [{"id": "sa-1", "status": "running"}]
+    manager.has_pending_work_for_async = AsyncMock(return_value=False)
+    manager.wait_for_parent_reports = AsyncMock(return_value=False)
+    state.subagents = manager
+
+    tracker = OrchestrationTracker(stage_timeout_seconds=2)
+    assert await _settle_stage_delivery(state, slot, tracker, 1) is False
+
+    halts = [
+        message["content"]
+        for message in slot.messages
+        if "subagent wait exhausted" in message.get("content", "")
+    ]
+    assert len(halts) == 1
+    assert "Auto-run stopped" in halts[0]
+    assert slot._auto_run is False

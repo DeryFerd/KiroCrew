@@ -419,22 +419,34 @@ class TestAuditRidesWithTheWrite:
     async def test_cancelling_the_caller_cannot_drop_a_committed_audit(self, store, monkeypatch):
         """The window the fix closes: cancel while the worker is mid-write."""
         started = threading.Event()
+        release = threading.Event()
+        audit_written = threading.Event()
         audited: list[str] = []
-        monkeypatch.setattr(kh, "_sel_log", lambda tool, **kw: audited.append(tool))
+
+        def _record(tool, **kw):
+            audited.append(tool)
+            audit_written.set()
+
+        monkeypatch.setattr(kh, "_sel_log", _record)
 
         def _slow_write():
             started.set()
-            threading.Event().wait(0.2)
+            # Held until the caller is cancelled, so the cancel provably lands
+            # while the worker is mid-write rather than after it returned.
+            release.wait(10.0)
 
         task = asyncio.ensure_future(
             kh._audited_write(_slow_write, event="item.update", fields={"item_id": "x"})
         )
-        await asyncio.to_thread(started.wait, 2.0)
+        assert await asyncio.to_thread(started.wait, 10.0), "the worker never started"
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        # The worker cannot be interrupted, so it finished and audited.
-        await asyncio.to_thread(threading.Event().wait, 0.4)
+        assert audited == [], "the audit landed before the write finished"
+        release.set()
+        # The worker cannot be interrupted, so it finishes and audits. Waited on
+        # the audit itself: a fixed sleep raced the worker thread on loaded runners.
+        assert await asyncio.to_thread(audit_written.wait, 10.0), "the committed audit was dropped"
         assert audited == ["item.update"]
 
 

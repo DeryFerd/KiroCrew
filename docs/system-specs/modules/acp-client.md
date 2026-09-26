@@ -112,24 +112,30 @@ this run's own set, live in-process projections and held leases are all checked
 first, and removal is identity-checked against the bytes and inode just read.
 The prune runs while the publication lock is held, which is what keeps a deletion
 from landing on an alias a publisher that takes the same lock is writing. That
-lock's acquisition ceiling is fixed, so one call's classification work carries a
-time budget. It is a BETWEEN-candidate budget, not a bound on the section: it is
-read before each candidate, so it limits how many are walked and not how long any
-single one takes, and the directory enumeration that precedes the walk is outside
-it. Reclaims are capped per run as well, but that cap is a ceiling and never a
-floor, and it bounds no part of the section — a candidate that is kept, active or
-leased costs a full classification and never increments it, so a backlog of
-entirely unreclaimable entries was walked in full while the lock was held.
-Per-candidate cost is not flat either, since the lease probe rescans the lease
-directory for every candidate. Each call starts at a rotating offset into the
-candidate list: a budgeted walk from a fixed start examines the same prefix every
-time, so entries that are kept, active or leased at the front of the directory's
-own order would hide the whole reclaimable remainder behind them permanently. The
-offset is drawn per call rather than remembered, since the workload this bounds
-spawns a fresh process per run and a process-local cursor would restart at zero
-every time. Drawing it makes reach across successive spawns probabilistic rather
-than scheduled: the backlog is bounded and shrinking, and every entry is reached
-in expectation, but no single spawn is promised any particular entry.
+lock's acquisition ceiling is fixed. Reclaims, stale-candidate work, and total
+traversal have separate PER RUN ceilings, and classification carries a time
+budget on top of them. The reclaim cap is a ceiling and never a floor, and it
+bounds no part of the section on its own — a yielded candidate that turns out
+not to be reclaimable costs a classification and never increments it. Leases are read by ONE
+bounded scan per prune rather than one probe per candidate. Candidate discovery
+streams the directory under an entry-walk limit: retained aliases do not consume
+the stale-work budget, but every directory entry consumes the separately bounded
+traversal budget, and skip credit is capped at one work-limit, so arbitrary
+padding and a large live set cannot extend the enumeration. Only the candidates
+that bounded walk yields are materialized. The time budget is a
+BETWEEN-candidate budget: it is read before each candidate, so it limits how many
+are walked and not how long any single one takes. Each call starts at a rotating
+offset into the bounded candidate list: a budgeted walk from a fixed start
+examines the same prefix every time, so entries that are kept at the front would
+hide the reclaimable remainder of the window behind them permanently. The offset
+is drawn per call rather than remembered, since the workload this bounds spawns a
+fresh process per run and a process-local cursor would restart at zero every
+time; reach within the window across successive spawns is therefore probabilistic
+rather than scheduled. The rotation covers the bounded window only: stable
+padding can keep aliases beyond the entry-walk limit deferred, so the ceiling
+guarantees bounded entry traversal rather than eventual drain. Reaching the entry-walk
+limit is logged at INFO, the same way the lease-scan ceiling is, so that
+deferral is visible without the doctor census.
 An accumulated backlog is cleared by a
 gateway-boot drain (`drain_stale_aliases`, reached from the boot janitor
 through the `agent_sdk.drivers.acp` seam): it runs that same per-spawn prune
@@ -157,12 +163,53 @@ handle, including one in the same process. Pruning always runs while the current
 projection holds its own lease, so a single-file lease turned every liveness
 probe into the uncertainty answer and reclaimed nothing on Windows while passing
 on POSIX, where locks are advisory. Finalization releases the lock and removes
-both identity-verified sidecars. Pruning reads each record without any lock and
-tests its `.hold` with a non-blocking exclusive acquisition: a held lease keeps
-every alias it names, while an unlocked one is crash/finalizer residue and both
-files are identity-checked and reclaimed. An unreadable, malformed, linked,
-replaced, or otherwise uncertain lease keeps the alias. OS lock release makes a
-crashed process's lease stale without trusting a PID.
+both identity-verified sidecars. Pruning runs ONE bounded lease scan for the whole
+run -- not one scan per candidate, which multiplied the candidate cap by the
+scan cap into a quadratic sweep under the held publication lock -- streaming lease
+records without materializing the directory and stopping at a fixed scan ceiling.
+That ceiling bounds how many entries are parsed and lock-probed, not how long a
+slow filesystem takes over them, so the scan also reads a between-entry deadline
+(`_PROJECTION_LEASE_SCAN_MAX_SECONDS`, 0.4 s, sized like the candidate walk's
+budget because both share the two-second lock ceiling with the publication
+writes). A spent deadline is handled exactly like the cap.
+That single scan produces the set of aliases named by every HELD lease plus one
+uncertainty bit; the candidate loop then consults the set with O(1) membership. A
+capped, interrupted, or failed scan is uncertain, and any uncertainty authorizes
+NO candidate deletion for the entire prune -- a candidate whose covering lease the
+scan could not fully see must be treated as live. A stale lease is counted as
+reclaimed only once neither its record nor its `.hold` remains, and a record is
+kept while its `.hold` could not be removed so the pair is retried whole. A
+`.hold` whose record is already gone names no alias but still consumes the entry
+ceiling, so an unlocked one is reclaimed as residue; otherwise that litter could
+keep every scan capped. That reclaim is limited to an EMPTY holder with the
+writer's own `<pid>-<uuid4 hex>` stem: the writer publishes every holder empty and
+never writes to it (the lock occupies no bytes), and the name alone is no proof
+that this module wrote it. A file such as an operator's `notes.hold`, or any
+non-empty holder whatever its name, is left in place (and still counts against
+the ceiling). A cap, an unreadable
+record and an open/iteration failure diverge only in what they do with residue
+already validated earlier in that same pass: a failed open or iteration of the
+directory trusts nothing it observed and discards its queued residue, while a
+capped or expired scan, or one that met an unreadable record (the scan notes it
+and keeps walking within its cap and deadline), first reclaims the
+crash/finalizer residue it lock-validated -- each unlink is identity-checked on
+its own pair, and otherwise a flood of records past the ceiling or one
+persistent bad record would make the state absorbing, permanently deferring
+cleanup of leases already proven stale -- and only then answers uncertain. All
+three are logged at INFO with the number of leases reclaimed. A held matching lease no longer
+short-circuits the scan: liveness is carried by the alias union, so the scan runs
+to the end, and a clean completion reclaims the crash/finalizer residue queued
+earlier in the pass EVEN when held leases exist. Residue is only ever unlinked
+after the directory scan closes, never mid-iteration.
+Within the bound, pruning reads each record without any lock and tests its `.hold`
+with a non-blocking exclusive acquisition: a held lease adds every alias it names
+to the live union, while an unlocked one is crash/finalizer residue and both files
+are identity-checked and reclaimed. An unreadable, malformed, linked, replaced, or
+otherwise uncertain lease stops the scan, marks it uncertain and keeps every
+candidate. OS
+lock release makes a crashed process's lease stale without trusting a PID. The
+prune performs this scan once and tests a single alias by membership in the
+returned live set; there is no separate single-alias predicate.
 
 Alias publication and pruning share one cross-process lock sidecar in the native
 agents directory, with a two-second acquisition ceiling instead of the platform
@@ -193,13 +240,16 @@ unnamed separately -- an ownership sidecar attributes to another Kiro Crew data
 home (two homes share this directory whenever they share `~/.kiro`), and how
 many lease records are unreadable; a record nested past the interpreter limit
 reads as unreadable rather than aborting, for the probe and the census alike.
-What the census retains is bounded (`_CENSUS_MAX_ALIASES`,
-`_CENSUS_MAX_LEASES`, the diagnostic's own memory and I/O budget) and a hit
-bound is reported as `truncated`: the measured counts are then floors, the
-derived ones (not-named, this home's share) are not printed, and because an
-unscanned record could be the unreadable one that stops the reclaim, the report
-says reclaimability is unknown rather than promising a drain. A backlog left by a build that predates the reclaim is
-thereby visible without `ls`, and its drain can be watched. Above
+What the census retains is bounded (`_CENSUS_MAX_ALIASES`, the diagnostic's
+own memory budget) and its lease walk has no separate ceiling: it charges every
+directory entry, records and `.hold` sidecars alike, against the reclaim scan's
+own `_PROJECTION_LEASE_SCAN_LIMIT`, so one constant decides where the census
+stops and where every prune defers. A hit bound is reported as `truncated`: the measured counts are then floors, the
+derived ones (not-named, this home's share) are not printed. An unscanned
+record could be the unreadable one that makes a reclaim pass fail closed, so
+the report says reclaimability is unknown rather than promising a drain. A
+backlog left by a build that predates the reclaim is thereby visible without
+`ls`, and its drain can be watched. Above
 `_SKILL_VIEW_BACKLOG_WARN` (2,000; a healthy host carries roughly authored
 agents x workspaces) it warns and says exactly which share the
 reclaim covers: this home's unreferenced aliases, a bounded number per spawn;

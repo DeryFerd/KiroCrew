@@ -39,7 +39,7 @@ _HERE = Path(__file__).resolve().parent
 #
 # It exists because a skip is indistinguishable from a pass in every report anyone
 # reads, and the skips below are wide: a missing image dependency takes the WHOLE
-# suite out of collection, so 236 tests can be entirely absent from a run that
+# suite out of collection, so every test here can be entirely absent from a run that
 # reports success. Installing those dependencies in a dedicated job is not enough on
 # its own, because it fixes the environment and not the mechanism: a dependency
 # rename, an extras split or a resolver change puts that lane back to reporting
@@ -72,21 +72,53 @@ else:
         "than read as either answer."
     )
 
+# How much the collection may GROW above the floor below before the floor must be
+# raised, in tests. It is headroom for growth, never tolerance for loss: a collection
+# BELOW the floor is an error at any size.
+#
+# The bound is derived, not chosen: the smallest module here contributes 3 tests, so a
+# margin of 3 or more would let a whole new module land without the floor ever being
+# raised, and the floor would start drifting again by exactly the mechanism this file
+# exists to stop. Two is the largest value that still forces a floor edit in the
+# commit that adds a module. ``_the_margin_is_smaller_than_the_smallest_module`` in
+# the repository's ``test_ci_surface_tests`` pins that derivation against the tree, so
+# widening this reddens a test rather than quietly buying more drift.
+_FLOOR_MARGIN = 2
+
 # Floor on how many tests the suite must yield, checked only under _REQUIRED_ENV.
 #
-# Read off a real collection (327 items). The margin is 2, not a comfortable ten per
-# cent, and the tightness IS the feature: the smallest module here contributes 3
-# tests, so a floor of 325 is tripped by losing even the smallest one, which a looser
-# floor would wave through. The per-module check below catches a module that stops
-# being collected at all; this catches the subtler shape, a module still collected
-# but yielding fewer tests than it holds -- a parametrize source that silently
-# empties, a decorator that swallows its function, an import guard that turns a class
-# into nothing.
+# This IS the measured collection (369 items), not the measurement less a cushion.
+# The position matters as much as the number, because the two directions want their
+# slack on opposite sides: a test DISAPPEARING is the failure this guard exists to
+# catch, so it gets no tolerance at all, while a test being ADDED is ordinary work
+# that should not red a lane for the first two before anyone edits a constant. Setting
+# the floor to collection-less-margin inverts both -- it spends the whole margin on
+# hiding losses and leaves growth no room whatsoever.
 #
-# When the suite grows, raise it. It may be LOWERED only alongside a deliberate
+# So a loss is caught the moment it takes the collection BELOW this number, and the
+# blind spot is exactly the legal growth currently sitting above it: zero right after
+# this constant is set to a fresh measurement, at most _FLOOR_MARGIN just before a
+# raise is forced. It is never a fixed allowance, which is why it is stated as a
+# relationship here and nowhere else -- the lane's own doc row points at this comment
+# rather than restating it, because a bound spelled out twice is the drift this file
+# exists to stop.
+#
+# The per-module check below catches a module that stops being collected at all and
+# the per-test check catches a named test that stops yielding an item, both exact and
+# holding no number; this catches the one shape neither can see, a test whose own
+# parametrize cases drain away while the function is still collected under its own
+# name.
+#
+# Growth reaches here from source as well as from tests: test_review_findings
+# parametrizes over the production AWS_CRED_ENV list, so adding one credential name
+# to the supervisor backend grows this collection without touching a test file.
+#
+# When the suite grows past the margin, raise this to the new collection, in the same
+# commit as the growth: a floor left behind by a growing suite stops measuring anything
+# long before anyone notices it drifted. It may be LOWERED only alongside a deliberate
 # deletion of tests, in the same commit, and never to make a red lane green: a floor
 # edited down to meet the measurement measures nothing.
-_MIN_COLLECTED = 325
+_MIN_COLLECTED = 369
 
 # Not collected on a non-POSIX host. This suite's SUBJECT is the source of a Linux
 # container image, built by the deploy driver and run on Fargate -- not part of the
@@ -194,34 +226,72 @@ def pytest_pycollect_makemodule(
     return _DeclinedModule.from_parent(parent, path=module_path)
 
 
-def _modules_that_define_tests() -> set[str]:
-    """Names of the ``test_*.py`` files beside this one that define a test function.
+def _declared_tests() -> dict[str, set[str]]:
+    """The ``test_*.py`` files beside this one that define a test, and the names they declare.
 
     Read from the source with ``ast``, never imported: this runs while deciding
     whether collection was complete, and importing a module to find out would either
     duplicate collection or hide the very import failure being looked for.
 
-    The filter matters because a file matching ``test_*.py`` is not necessarily a
-    test module. ``test_supervisor_fakes.py`` is named that way to sit inside one
-    track's ownership and deliberately defines no test function, so requiring every
+    A module is a KEY when the source defines any ``test*`` function at all, anywhere
+    in the file. That is the presence question and it is deliberately loose, so a
+    module cannot drop out of the check by putting its tests somewhere unusual. The
+    filter matters because a file matching ``test_*.py`` is not necessarily a test
+    module. ``test_supervisor_fakes.py`` is named that way to sit inside one track's
+    ownership and deliberately defines no test function, so requiring every
     ``test_*.py`` to yield an item fails on the tree as it stands. Asking the source
     what it defines keeps the check exact and self-maintaining: add a test to that
     helper and it starts being required, with nothing to remember.
+
+    Its VALUE is the narrower set, the names pytest's own collection rules can reach:
+    a ``test*`` function at module level, or a ``test*`` method of a ``Test*`` class.
+    Scoped deliberately rather than walked, because the loose walk also finds names
+    pytest never collects -- a helper nested inside another function, a method of a
+    class whose name does not match ``python_classes`` -- and requiring an item for
+    one of those would be a red with nothing wrong behind it.
     """
-    named: set[str] = set()
+    declared: dict[str, set[str]] = {}
     for path in _HERE.glob("test_*.py"):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except (OSError, SyntaxError):  # pragma: no cover - unparseable is pytest's error
-            named.add(path.name)
+            declared[path.name] = set()
             continue
-        for node in ast.walk(tree):
+        collectible: set[str] = set()
+        for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
                 "test"
             ):
-                named.add(path.name)
-                break
-    return named
+                collectible.add(node.name)
+            elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                for member in node.body:
+                    if isinstance(
+                        member, (ast.FunctionDef, ast.AsyncFunctionDef)
+                    ) and member.name.startswith("test"):
+                        collectible.add(member.name)
+        defines_any = any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith("test")
+            for node in ast.walk(tree)
+        )
+        if defines_any or collectible:
+            declared[path.name] = collectible
+    return declared
+
+
+def _yielded_test_names(items: list[pytest.Item]) -> dict[str, set[str]]:
+    """Per module, the function names behind the collected *items*.
+
+    ``originalname`` is the function's own name on a parametrized item, whose ``name``
+    carries the case id instead (``test_x[a-b]``). Every item this suite produces
+    reports it, so the split on ``name`` is there for a collector that does not: an
+    item missing both would otherwise read as a declared name that yielded nothing.
+    """
+    yielded: dict[str, set[str]] = {}
+    for item in items:
+        base = getattr(item, "originalname", None) or item.name.split("[")[0]
+        yielded.setdefault(item.path.name, set()).add(base)
+    return yielded
 
 
 def pytest_collection_modifyitems(
@@ -235,13 +305,20 @@ def pytest_collection_modifyitems(
     They are different failures, and only the second catches a module that quietly
     stops yielding tests while every dependency is still importable.
 
-    Two checks, and the first is the one that cannot rot: the set of modules that
-    must yield tests is read off the filesystem, so it needs no maintenance and
-    cannot disagree with the tree. A module that defines tests and contributed no
-    collected item is an error whatever the reason. Deleting a test file legitimately
-    removes it from both sides and stays silent, which is why this check can be exact
-    rather than a floor. The count floor then covers what a presence check cannot
-    see.
+    Three checks, and the first two cannot rot: what must yield tests is read off the
+    filesystem, so it needs no maintenance and cannot disagree with the tree. A module
+    that defines tests and contributed no collected item is an error whatever the
+    reason, and so is a single named test that the source declares and the collection
+    does not hold -- the shape a decorator swallowing its function makes, or an import
+    guard that turns a class into nothing. Deleting a test legitimately removes it
+    from both sides and stays silent, which is why these checks can be exact rather
+    than a floor.
+
+    The count floor then covers the one shape reading names cannot see: a test whose
+    own cases drain away while its name is still collected. A floor is a remembered
+    number, so the last check keeps it honest in the other direction -- a collection
+    running far above the floor means the suite grew and the floor was left behind,
+    which is how a floor stops measuring anything without ever reddening.
 
     Items outside this directory are ignored, so a wider run that happens to include
     this suite is not judged by it.
@@ -250,14 +327,31 @@ def pytest_collection_modifyitems(
         return
     mine = [item for item in items if getattr(item, "path", None) is not None]
     mine = [item for item in mine if item.path.parent == _HERE]
+    declared = _declared_tests()
     collected = {item.path.name for item in mine}
-    uncollected = sorted(_modules_that_define_tests() - collected)
+    uncollected = sorted(declared.keys() - collected)
     if uncollected:
         raise pytest.UsageError(
             f"{_REQUIRED_ENV} is set and these modules define tests but contributed "
             f"no collected test: {', '.join(uncollected)}. A module that collects "
             "nothing is reported as neither a pass nor a failure, so this is an error "
             "rather than a silence."
+        )
+    yielded = _yielded_test_names(mine)
+    silent = sorted(
+        f"{module}::{name}"
+        for module, names in declared.items()
+        for name in names - yielded.get(module, set())
+    )
+    if silent:
+        raise pytest.UsageError(
+            f"{_REQUIRED_ENV} is set and the source declares these tests, which the "
+            f"collection does not hold: {', '.join(silent)}. Their modules were "
+            "collected, so each name was read off the source and then produced no "
+            "item -- a decorator that returns something pytest does not collect, a "
+            "class body that an import guard emptied, a name shadowed by a later "
+            "definition. Restore the item rather than renaming the test out of the "
+            "check."
         )
     if len(mine) < _MIN_COLLECTED:
         raise pytest.UsageError(
@@ -266,6 +360,21 @@ def pytest_collection_modifyitems(
             "that defines tests yielded at least one, so tests went missing inside "
             "one of them. Find them rather than lowering the floor; lower it only in "
             "the same commit as a deliberate deletion."
+        )
+    if len(mine) - _MIN_COLLECTED > _FLOOR_MARGIN:
+        raise pytest.UsageError(
+            f"{_REQUIRED_ENV} is set and the crew container suite collected "
+            f"{len(mine)} tests, which is {len(mine) - _MIN_COLLECTED} above its "
+            f"floor of {_MIN_COLLECTED} rather than the {_FLOOR_MARGIN} of growth "
+            f"headroom it is allowed. The suite grew and the floor stayed behind, so "
+            f"the floor now passes a run that lost "
+            f"{len(mine) - _MIN_COLLECTED} tests. Raise _MIN_COLLECTED to "
+            f"{len(mine)} -- the collection itself, not less a cushion -- in the "
+            f"commit that grew the suite. If THIS commit did not grow it, a "
+            f"concurrently merged one did: two branches may each add up to "
+            f"{_FLOOR_MARGIN} tests, clear this bound separately, and compose past it "
+            f"without either one editing this line, so the raise is owed here rather "
+            f"than being a regression to hunt."
         )
 
 

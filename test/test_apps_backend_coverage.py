@@ -22,6 +22,7 @@ and ``loopback_urlopen`` are stubbed, and the spawn body is frozen at the
 from __future__ import annotations
 
 import ast
+import builtins
 import importlib
 import json
 import logging
@@ -2677,6 +2678,68 @@ class TestDependencyInstall:
         log_text = (spawn_root / "data" / "logs" / "backend.log").read_text()
         assert "Failed to install requirements.txt dependencies" in log_text
         assert "No matching distribution found" in log_text
+
+    def test_a_non_ascii_provisioning_failure_is_written_under_a_narrow_locale_codec(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A text handle opened without ``encoding=`` takes the platform default,
+        which on Windows is cp1252. The provision-error line can carry a
+        Unicode traceback glyph or an accented path; under cp1252 that write
+        raises UnicodeEncodeError and the spawn aborts on the branch meant to
+        record the failure. The open must name UTF-8 so the line always lands.
+
+        The narrow default is simulated by giving every text-mode open that
+        omits ``encoding=`` the cp1252 codec, which is what Windows does."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        glyphs = "\u2192 C:\\Users\\Ren\u00e9\\pkg \u2014 \u2019quoted\u2019"
+        err = subprocess.CalledProcessError(
+            1, ["pip"], stderr=f"ERROR: build failed {glyphs}".encode("utf-8")
+        )
+        _record_runs(monkeypatch, exc=err)
+        _capture_popen(monkeypatch)
+
+        real_open = builtins.open
+
+        def _windows_default_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+            if "b" not in mode and "encoding" not in kwargs and len(args) < 4:
+                kwargs["encoding"] = "cp1252"
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _windows_default_open)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-utf8", _manifest("server.py"))
+        raw = (spawn_root / "data" / "logs" / "backend.log").read_bytes()
+        assert b"[kiro-crew] " in raw
+        assert glyphs.encode("utf-8") in raw, "the non-ASCII text must round-trip as UTF-8"
+
+    def test_the_crash_tail_decodes_the_childs_bytes_with_replacement(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The child appends raw bytes after the UTF-8 header. A stray byte in
+        its output must not turn the whole tail into "(no output)"; the read
+        decodes with replacement and the error still names what the child said."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        log_path = spawn_root / "data" / "logs" / "backend.log"
+
+        def _popen(*_a: Any, **kwargs: Any) -> Any:
+            kwargs["stdout"].write("[kiro-crew] header\n")
+            kwargs["stdout"].flush()
+            with open(log_path, "ab") as raw:
+                raw.write(b"Error: address already in use \xff\xfe on bind\n")
+            # A pid no platform allocates (the ``_UNALLOCATABLE_PID`` spelling in
+            # test/test_update_provider.py): the crash branch may signal it.
+            return SimpleNamespace(pid=99_999_999_999, returncode=1, poll=lambda: 1)
+
+        monkeypatch.setattr(bmod, "popen_limited", _popen)
+        monkeypatch.setattr(bmod, "_survived_spawn", lambda _proc, _port=None: False)
+        with caplog.at_level(logging.ERROR):
+            result = bmod._start_app_backend_body("tail-bytes", _manifest("server.py"))
+        assert result is None
+        message = next(r.message for r in caplog.records if "exited immediately" in r.message)
+        assert "(no output)" not in message
+        assert "address already in use" in message
+        assert "[PORT COLLISION]" in message
 
     def test_tokenized_url_query_strings_are_stripped_from_pip_stderr(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch

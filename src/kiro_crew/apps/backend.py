@@ -2717,7 +2717,16 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         logger.debug("SEL audit failed for app %s backend spawn: %s", app_name, exc)
 
     try:
-        log_fh = open(log_path, "w")
+        # UTF-8 with replacement, not the locale codec. A text handle opened
+        # without ``encoding=`` takes the platform default, which on Windows is
+        # the ANSI code page (cp1252), and the provision-error line below can
+        # carry non-ASCII text -- a Unicode traceback glyph, an accented
+        # install path. Under cp1252 that write raises UnicodeEncodeError and
+        # the spawn aborts on the one branch whose whole point is to record
+        # why provisioning failed. ``errors="replace"`` keeps the write total
+        # for any codepoint; the child's own output is appended as raw bytes
+        # through the inherited fd and is not affected by this wrapper.
+        log_fh = open(log_path, "w", encoding="utf-8", errors="replace")
         if provision_error:
             # Put the real cause at the top of the backend's own (user-visible)
             # log: the import error missing deps produce reads as an app bug,
@@ -2766,7 +2775,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     if not _survived_spawn(proc, port):
         tail = ""
         try:
-            with open(log_path, "r") as _lf:
+            # Same codec as the write above; the child's stdout bytes follow
+            # the header and may be any encoding, so decode with replacement
+            # rather than letting one stray byte turn the tail into "(no output)".
+            with open(log_path, "r", encoding="utf-8", errors="replace") as _lf:
                 tail = "".join(_lf.readlines()[-8:]).strip()[-600:]
         except Exception:  # noqa: BLE001
             pass

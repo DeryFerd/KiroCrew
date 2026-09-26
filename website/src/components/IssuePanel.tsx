@@ -89,6 +89,22 @@ const REACTION_LABEL_KEY: Record<string, string> = {
   eyes: 'components.issuePanel.reaction_eyes',
 }
 
+/** Catalog keys for a linked change's lifecycle `state`. The wire value is a
+ *  free-form provider string (GitHub / GitLab PRs report open|closed|merged|
+ *  draft; a linked Jira issue can report any workflow state), so it was printed
+ *  raw and CSS-capitalized — untranslated in every locale and invisible to the
+ *  i18n added-lines gate. The four common lifecycle values render from the
+ *  catalog; an unmapped provider-specific value keeps its lowercased raw form,
+ *  because a Jira workflow state has no fixed catalog entry to translate to.
+ *  Flat and indexed inline so the key gate resolves the map, matching
+ *  `REACTION_LABEL_KEY` above. */
+const CHANGE_STATE_LABEL_KEY: Record<string, string> = {
+  open: 'components.issuePanel.change_state_open',
+  closed: 'components.issuePanel.change_state_closed',
+  merged: 'components.issuePanel.change_state_merged',
+  draft: 'components.issuePanel.change_state_draft',
+}
+
 /** Reaction tallies worth showing, in a stable order. Zero counts are dropped —
  *  an issue with no thumbs-up should not render a "0" next to every reaction
  *  name. Copy lives in `REACTION_LABEL_KEY` above. */
@@ -248,7 +264,21 @@ function IssueBody({
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted">
                 {change.relation && <span className="shrink-0 italic">{change.relation}</span>}
                 <span className="shrink-0">{identifier}</span>
-                {change.state && <span className="capitalize shrink-0">{change.state.toLowerCase()}</span>}
+                {change.state && (() => {
+                  const wire = change.state.toLowerCase()
+                  const key = CHANGE_STATE_LABEL_KEY[wire]
+                  // A mapped lifecycle value renders from the catalog, which
+                  // decides its casing — so NO `capitalize` there. An unmapped
+                  // provider-specific state (e.g. a Jira workflow state) is
+                  // untranslated by design and keeps its raw lowercased form;
+                  // it DOES get `capitalize`, or it would read all-lowercase
+                  // ("in progress") next to catalog-cased siblings ("Open").
+                  // `i18nT` only ever sees a resolvable literal key, so the key
+                  // gate stays static.
+                  return key
+                    ? <span className="shrink-0">{i18nT(key)}</span>
+                    : <span className="shrink-0 capitalize">{wire}</span>
+                })()}
               </div>
             </div>
             {changeUrl && <ExternalLink className="lucide-inline shrink-0 text-muted" aria-hidden="true" />}

@@ -2714,6 +2714,25 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
 # allowlists deliberately stay narrower — do not "sync" them to this one.
 _CREATABLE_MODES = ("", "orchestrator", "design-critique")
 
+# Deferral is an optimization, so a request shape added later must stay on the
+# synchronous path until its publication ordering has been reviewed explicitly.
+_DEFERRED_PLAIN_CREATE_KNOWN_KEYS = frozenset(
+    {
+        "name",
+        "agent",
+        "agent_kind",
+        "model",
+        "folder_id",
+        "instance_id",
+        "adopt_remote_slot",
+        "memory_mode",
+        "mode",
+        "title",
+        "artifact",
+        "ephemeral",
+    }
+)
+
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
@@ -3201,8 +3220,30 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # any client sees already carries the folder, title, artifact binding and
     # project. Otherwise each of those is a separate post-create correction the
     # UI renders as a jump.
+    #
+    # A successful ordinary local New Chat is different: the POST response itself
+    # carries the complete slot and the client inserts it before activating the
+    # tab. Serializing every open slot before returning only makes that first paint
+    # wait. The state-owned 10 ms handoff moves its coalesced full-list frame past
+    # the response. Only known request keys may qualify; metadata-bearing,
+    # app-owned, mode-specific, nonpersistent and remote creates remain
+    # synchronous. Errors before a successful handoff retain request-visible
+    # publication semantics; delayed publication failures are logged and retried
+    # once by the guarded callback.
+    defer_plain_create_broadcast = bool(
+        set(body).issubset(_DEFERRED_PLAIN_CREATE_KNOWN_KEYS)
+        and is_new_slot
+        and not request_app
+        and not instance_id
+        and not folder_id
+        and not _mode
+        and not body.get("title")
+        and not body.get("artifact")
+        and memory_mode == "persistent"
+        and not body.get("ephemeral")
+    )
     async with contextlib.AsyncExitStack() as creation_stack:
-        creation_stack.enter_context(state.suspend_slots_push())
+        request_deferred_flush = creation_stack.enter_context(state.suspend_slots_push())
         try:
             slot = state.get_or_create_slot(
                 name,
@@ -3551,6 +3592,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # placement. Inside the suspension this only marks a push owed, so the
         # new-slot path still emits exactly ONE coalesced frame.
         state.push_slots_update()
+        if defer_plain_create_broadcast:
+            request_deferred_flush(f"create slot {slot.key!r}")
     # Speculative session creation: overlap the ACP handshake with the user's
     # think-time before their first message. No-op unless session.eager_spawn.
     #

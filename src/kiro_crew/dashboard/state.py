@@ -770,6 +770,9 @@ def _delivery_key(content: str) -> str:
 # Slot-list broadcast coalescing window. The sub-agent slots debouncer in
 # slack/gateway.py hardcodes the same value independently; the two are not shared.
 _SLOTS_BROADCAST_INTERVAL_S: float = 0.2
+# A successful plain persistent-memory create hands its full-list publication past
+# the HTTP response by this fixed interval. Callers may name the operation only.
+_DEFERRED_SLOTS_FLUSH_DELAY_S: float = 0.01
 
 
 def native_subagent_output_tail(chunks: list[str], limit: int = NATIVE_SUBAGENT_OUTPUT_TAIL) -> str:
@@ -4815,6 +4818,7 @@ class DashboardState:
     # below; these only supply the "nothing suspended, not restoring" baseline.
     _slots_push_suspend: int = 0
     _slots_push_pending: bool = False
+    _slots_push_overlapped: bool = False
     restoring_open_slots: bool = False
     # push_slots_update() coalescing state, on that same read path. The lock
     # defaults to None rather than to a shared Lock(): a None lock means "no
@@ -5050,9 +5054,10 @@ class DashboardState:
         # Broadcast: each SSE client gets its own queue; _notify_event wakes all
         self._sse_queues: list[asyncio.Queue[dict[str, Any]]] = []
         self._notify_event = asyncio.Event()
-        # Depth + pending flag for suspend_slots_push(); see that method.
+        # Depth + pending/overlap flags for suspend_slots_push(); see that method.
         self._slots_push_suspend = 0
         self._slots_push_pending = False
+        self._slots_push_overlapped = False
         # Time-based coalescing state for push_slots_update(). Guarded by a
         # threading.Lock because callers are not all on the event loop.
         self._slots_broadcast_lock = threading.Lock()
@@ -8159,7 +8164,7 @@ class DashboardState:
             slot.clear_mcp_report()
 
     @contextlib.contextmanager
-    def suspend_slots_push(self) -> "Iterator[None]":
+    def suspend_slots_push(self) -> "Iterator[Callable[[str], None]]":
         """Coalesce every ``push_slots_update()`` inside the block into one at exit.
 
         ``get_or_create_slot`` broadcasts the FULL slot list on each call, so a bulk
@@ -8167,24 +8172,67 @@ class DashboardState:
         work for intermediate states no client will ever render (measured ~1.3s at
         N=77, and it grows quadratically). Wrap the restore, emit one broadcast.
 
+        The yielded callback accepts only an operation label and lets a successful
+        request move the coalesced flush by the state-owned fixed delay past its
+        response. Existing callers ignore it and retain the synchronous flush. A
+        deferred callback that fires during an active suspension transfers its
+        publication debt to that suspension rather than publishing inside it. If
+        suspensions overlap before the debt reaches depth zero, the outermost exit
+        publishes synchronously: one request cannot delay another context's
+        publication contract.
+
         Depth-counted so nested use is safe (an inner block must not flush early),
         and ``@contextmanager``'s try/finally unwinds the depth even if the body
         raises. Only flushes if something actually asked to push. A flush that
         itself fails while the body's own exception is unwinding annotates its
         exception (`PEP 678`) so the buried original stays visible — the flush's
-        exception otherwise replaces the body's in the caller's view, demoting
-        the actual fault to ``__context__``.
+        exception otherwise replaces the body's in the caller's view. A deferred
+        flush is honored only after a clean body exit; every exception keeps the
+        old synchronous failure propagation.
         """
+        deferred_operation: str | None = None
+
+        def defer_flush(operation: str = "slots update") -> None:
+            nonlocal deferred_operation
+            deferred_operation = operation
+
         self._slots_push_suspend += 1
+        if self._slots_push_suspend > 1:
+            self._slots_push_overlapped = True
         try:
-            yield
+            yield defer_flush
         finally:
             self._slots_push_suspend -= 1
+            overlapped = self._slots_push_overlapped
+            if self._slots_push_suspend == 0:
+                self._slots_push_overlapped = False
             if self._slots_push_suspend == 0 and self._slots_push_pending:
                 self._slots_push_pending = False
                 # Captured BEFORE the flush call: inside the `except` block below,
                 # sys.exc_info() would already name the flush's own exception.
                 unwinding_over = sys.exc_info()[1]
+                if deferred_operation is not None and unwinding_over is None and not overlapped:
+                    loop = self.serving_loop
+                    if loop is not None and loop is self._running_loop():
+                        try:
+                            loop.call_later(
+                                _DEFERRED_SLOTS_FLUSH_DELAY_S,
+                                self._deferred_slots_flush,
+                                deferred_operation,
+                                1,
+                            )
+                            lock = self._slots_broadcast_lock
+                            if lock is not None:
+                                with lock:
+                                    if self._slots_broadcast_timer is not None:
+                                        self._slots_broadcast_timer.cancel()
+                                        self._slots_broadcast_timer = None
+                            return
+                        except RuntimeError:
+                            # A loop closing between lookup and scheduling cannot
+                            # drop the announcement. Fall back to the old immediate
+                            # flush and let its failure retain caller visibility.
+                            pass
                 try:
                     self.push_slots_update()
                 except BaseException as flush_exc:
@@ -8195,6 +8243,67 @@ class DashboardState:
                             "original exception is chained below as __context__"
                         )
                     raise
+
+    def _deferred_slots_flush(self, operation: str, retries_remaining: int) -> None:
+        """Publish one fresh snapshot, retrying a deferred failure once.
+
+        This deliberately bypasses the leading/trailing coalescer at depth zero:
+        returning from ``push_slots_update`` can mean that a bare trailing callback
+        owns the real serialization, which would put its exception back under
+        asyncio's generic callback handler. During an active suspension, however,
+        the outermost context owns the safe flush, so transfer the publication debt
+        to it through ``push_slots_update``. Before each direct attempt, an armed
+        trailing callback is canceled under the coalescing lock and the new window
+        is stamped; a failed attempt therefore leaves only its bounded retry armed.
+        Each attempt re-serializes current state, so the retry reconciles every
+        mutation that landed in the meantime.
+        """
+        if self._slots_push_suspend:
+            self.push_slots_update()
+            return
+
+        try:
+            lock = self._slots_broadcast_lock
+            if lock is not None:
+                with lock:
+                    if self._slots_broadcast_timer is not None:
+                        self._slots_broadcast_timer.cancel()
+                        self._slots_broadcast_timer = None
+                    self._slots_broadcast_last = time.monotonic()
+            self._do_slots_broadcast()
+            return
+        except Exception:
+            logger.error(
+                "Deferred slots publication failed for %s; retries remaining=%d",
+                operation,
+                retries_remaining,
+                exc_info=True,
+            )
+
+        if retries_remaining <= 0:
+            return
+        loop = self.serving_loop
+        if loop is None or loop is not self._running_loop():
+            logger.error(
+                "Deferred slots publication retry could not be scheduled for %s: "
+                "serving loop is unavailable",
+                operation,
+            )
+            return
+        try:
+            loop.call_later(
+                _SLOTS_BROADCAST_INTERVAL_S,
+                self._deferred_slots_flush,
+                operation,
+                retries_remaining - 1,
+            )
+        except RuntimeError:
+            logger.error(
+                "Deferred slots publication retry could not be scheduled for %s: "
+                "serving loop is closing",
+                operation,
+                exc_info=True,
+            )
 
     def push_slots_update(self) -> None:
         """Push slots, keeping provider status confined to owner websockets.

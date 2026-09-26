@@ -76,6 +76,7 @@ from kiro_crew.messaging.outbound_files import (
     extract_local_refs_off_loop,
     hide_local_refs,
     protected_ref_spans,
+    seam_carries_markup_debt,
 )
 from kiro_crew.messaging.renderer import (
     Renderer,
@@ -87,7 +88,10 @@ from kiro_crew.messaging.renderer import (
     session_provenance_tag,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import (
+    split_markdown_safe,
+    split_markdown_safe_with_tier,
+)
 from kiro_crew.messaging.status_reactions import (
     PHASE_QUEUED,
     PHASE_THINKING,
@@ -963,14 +967,53 @@ class DiscordRenderer(Renderer):
             sealed = chunks
         else:
             split_source = raw
-            chunks = await asyncio.to_thread(split_markdown_safe, split_source, limit)
+            chunks, degraded = await asyncio.to_thread(
+                split_markdown_safe_with_tier, split_source, limit
+            )
             sealed, tail = chunks[:-1], chunks[-1] if chunks else ""
-            probe_at = len(prefix := raw.removesuffix(tail))
-            probe = prefix + "![x](/tmp/x.png)" + " ".join(re.findall(r"`+", prefix)) + tail
-            spans = await asyncio.to_thread(protected_ref_spans, probe) if sealed else []
-            lost = bool(sealed) and raw.endswith(tail) and probe_at not in dict(spans)
-            dirty_cut = any(len(line) > limit for line in split_source.splitlines(True))
-            if dirty_cut or lost:
+            if not degraded and len(chunks) > 1:
+                # No synthetic probe: re-derive the split-tier signal from the
+                # split output. A clean line cut still moves a reference across a
+                # literalness boundary two ways: a chunk scanned alone carries a
+                # span the full text never had (an opener orphaned into the
+                # tail), or the sealed prefix leaves markup debt that flips how
+                # the live tail's own first marker classifies at the semantic
+                # seal.
+                for chunk in chunks:
+                    if await asyncio.to_thread(protected_ref_spans, chunk):
+                        degraded = True
+                        break
+                if not degraded:
+                    # ONE seam-aware check for all markup-debt families. The
+                    # tail is later scanned ALONE by the extraction reader, so a
+                    # leak is exactly a marker on the tail's first line that the
+                    # reader classifies differently with the sealed prefix
+                    # present than without it -- an unclosed inline-code run, an
+                    # odd backslash escape, an open fence, or a four-wide indent
+                    # opened in the sealed prefix (full literal, tail real -> a
+                    # source-literal file uploaded), or a mid-line cut leaving
+                    # the tail tab-led (full real, tail literal -> the raw local
+                    # path shipped as text). ``seam_carries_markup_debt`` asks
+                    # the extraction reader itself at a probe marker placed where
+                    # the tail's first content sits, so every family -- and any
+                    # future one -- is judged with the reader's own segmentation
+                    # rather than re-derived per opener kind at the seam.
+                    #
+                    # Only meaningful when the tail is the source's own
+                    # remainder (``split_source.endswith(tail)``). When a fenced
+                    # block crosses the limit the splitter builds
+                    # ``tail = reopener + remainder`` with a synthetic
+                    # ``"```lang\n"`` the source never had, so ``source_head +
+                    # tail`` is not the real source and the concatenation's fence
+                    # structure is fabricated; that seam sits inside an open
+                    # fence, literal in BOTH readings, and the fence-aware
+                    # per-chunk span scan above already owns it -- so skip the
+                    # seam check when the tail carries a reopener.
+                    if split_source.endswith(tail):
+                        source_head = split_source[: len(split_source) - len(tail)]
+                        if await asyncio.to_thread(seam_carries_markup_debt, source_head, tail):
+                            degraded = True
+            if degraded:
                 self._segment_uploads_safe = False
         for ch in sealed:
             self._buf = [ch]

@@ -40,8 +40,10 @@ clean interpreter.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections import OrderedDict
+from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Final
 
@@ -1518,6 +1520,48 @@ def _unit_param(request: web.Request) -> str:
     return (request.match_info.get("unit") or "").strip()
 
 
+async def _offload_then_recheck(
+    request: web.Request,
+    operation: str,
+    work: Callable[[], Any],
+    respond: Callable[[Any], web.Response],
+    *,
+    unit: str = "",
+    listing: bool = False,
+) -> web.Response:
+    """Read off the loop, re-check the grant the read suspended, then answer.
+
+    An agent-door read that suspends owes four steps in one order: authorize, build
+    the payload off the loop, re-check the grant, answer. The gate is the route's own
+    first line because what it authorizes differs per route; the other three are the
+    same three calls in the same order everywhere, and they live here so that a route
+    cannot answer out of that order. The route hands over the read and the shaping and
+    never names the payload, so "answered without re-checking" is not a shape a route
+    can write -- which is a stronger guarantee than every route happening to get the
+    order right.
+
+    ``work`` is the read, already bound to its arguments, and runs in a thread.
+    ``respond`` turns the payload into the response and belongs to the ROUTE, because
+    what a payload means differs per route: a page with no log is a 404, a fold is
+    wrapped with the unit it was folded from, a listing is returned as it stands. It
+    is called only once the re-check holds, so a withdrawn grant reaches the caller as
+    the refusal and the route's shaping never runs at all.
+
+    A storage refusal is mapped here rather than per route because all three reads map
+    it the same way: :func:`_crew_log_refusal` keeps the code the caller can act on.
+    """
+    from kiro_crew.crew_log.errors import CrewLogError
+
+    try:
+        payload = await asyncio.to_thread(work)
+    except CrewLogError as exc:
+        return _crew_log_refusal(exc)
+    stale = await _stale_grant_refusal(request, operation, unit=unit, listing=listing)
+    if stale is not None:
+        return stale
+    return respond(payload)
+
+
 async def api_crew_log_sessions(request: web.Request) -> web.Response:
     """GET /api/crew-log/sessions -- one row per session crew log this caller may see."""
     denied = await _authorize_crew_log_read(request, "session_crew_log.list", listing=True)
@@ -1525,8 +1569,6 @@ async def api_crew_log_sessions(request: web.Request) -> web.Response:
         return denied
     if not env_flag_enabled(CREW_LOG_ENV):
         return _disabled()
-    from kiro_crew.crew_log.errors import CrewLogError
-
     try:
         limit = int(request.query.get("limit") or 50)
         active_within_secs = int(request.query.get("active_within_secs") or 0)
@@ -1558,8 +1600,10 @@ async def api_crew_log_sessions(request: web.Request) -> web.Response:
             return False
         return not _workspace_refusal(caller_workspace, recorded)
 
-    try:
-        payload = await asyncio.to_thread(
+    return await _offload_then_recheck(
+        request,
+        "session_crew_log.list",
+        functools.partial(
             _crew_log_read().list_session_units,
             slot_contains=request.query.get("slot_contains", "") or "",
             active_within_ms=active_within_secs * 1000,
@@ -1568,13 +1612,12 @@ async def api_crew_log_sessions(request: web.Request) -> web.Response:
             scope_unit=scope_unit,
             scope_slot=scope_slot,
             admit_dispatched=_admit,
-        )
-    except CrewLogError as exc:
-        return _crew_log_refusal(exc)
-    stale = await _stale_grant_refusal(request, "session_crew_log.list", listing=True)
-    if stale is not None:
-        return stale
-    return web.json_response(payload)
+        ),
+        # A listing is returned as it stands: each row was admitted as it was
+        # gathered, so there is nothing left to shape.
+        web.json_response,
+        listing=True,
+    )
 
 
 async def api_crew_log_resolve(request: web.Request) -> web.Response:
@@ -1626,24 +1669,25 @@ async def api_crew_log_unit_page(request: web.Request) -> web.Response:
         return denied
     if not env_flag_enabled(CREW_LOG_ENV):
         return _disabled()
-    from kiro_crew.crew_log.errors import CrewLogError
-
     try:
         start, end = _span(request)
     except ValueError as exc:
         return _bad_request(str(exc), "bad_range")
-    try:
-        payload = await asyncio.to_thread(_read_page, unit, start, end)
-    except CrewLogError as exc:
-        return _crew_log_refusal(exc)
-    stale = await _stale_grant_refusal(request, "session_crew_log.read", unit=unit)
-    if stale is not None:
-        return stale
-    if not payload.get("exists"):
-        return web.json_response(
-            {"error": f"no session crew log for {unit!r}", "code": "unknown_unit"}, status=404
-        )
-    return web.json_response(payload)
+
+    def _respond(payload: Any) -> web.Response:
+        if not payload.get("exists"):
+            return web.json_response(
+                {"error": f"no session crew log for {unit!r}", "code": "unknown_unit"}, status=404
+            )
+        return web.json_response(payload)
+
+    return await _offload_then_recheck(
+        request,
+        "session_crew_log.read",
+        functools.partial(_read_page, unit, start, end),
+        _respond,
+        unit=unit,
+    )
 
 
 async def api_crew_log_unit_projection(request: web.Request) -> web.Response:
@@ -1674,14 +1718,19 @@ async def api_crew_log_unit_projection(request: web.Request) -> web.Response:
         return _bad_request(
             f"projection {name!r} is keyed by slot, not by session", "slot_projection"
         )
-    try:
-        result = await asyncio.to_thread(projections.read_projection, unit, name)
-    except CrewLogError as exc:
-        return _crew_log_refusal(exc)
-    stale = await _stale_grant_refusal(request, "session_crew_log.projection", unit=unit)
-    if stale is not None:
-        return stale
-    return web.json_response({"session_id": unit, **result.to_dict()})
+
+    def _respond(result: Any) -> web.Response:
+        # The fold is named by the unit it was folded from, which the reader needs
+        # and the fold itself does not carry.
+        return web.json_response({"session_id": unit, **result.to_dict()})
+
+    return await _offload_then_recheck(
+        request,
+        "session_crew_log.projection",
+        functools.partial(projections.read_projection, unit, name),
+        _respond,
+        unit=unit,
+    )
 
 
 # --------------------------------------------------------------------------- #

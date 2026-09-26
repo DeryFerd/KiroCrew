@@ -2447,39 +2447,252 @@ class TestTheGrantIsRecheckedAfterTheRead:
 
         This route set grows, and a route added without the re-check reads correctly
         in review -- the defect is an ABSENT line, which no assertion about the
-        current routes can see. So the rule is asserted over the module's own source:
-        an agent-door handler that suspends to build a payload must pass through
-        ``_stale_grant_refusal`` before returning it -- the unit routes because the
-        target's class can move while the entries are read, and the listing because its
-        rows were gathered under a scope wider than the caller now holds.
+        current routes can see. So the rule is asserted over the module's own source,
+        and it is asserted as a shape a new route cannot get wrong rather than as a
+        line each route must remember: the re-check has exactly ONE caller, which is
+        the helper that offloads, and the gate and that helper are the only places an
+        agent-door route is allowed to suspend. A route that wants to build a payload
+        off the loop therefore has one way in, and that way re-checks the grant before
+        the route's own shaping ever runs.
         """
         import ast
         import inspect
 
         tree = ast.parse(inspect.getsource(routes))
-        gated = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.AsyncFunctionDef):
-                continue
-            called = {
-                n.func.id
-                for n in ast.walk(node)
-                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-            }
-            if "_authorize_crew_log_read" not in called:
-                continue
-            body = ast.dump(node)
-            if "to_thread" not in body:
-                # The resolve route answers from memory, so its gate's own check
-                # is already the last read of live state before it returns.
-                continue
-            gated.append(node.name)
-            assert "_stale_grant_refusal" in called, (
-                f"{node.name} suspends after authorizing but never re-checks the "
-                "grant; a caller can acquire a channel link while it reads"
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        ]
+
+        def _calls(node):
+            # Both spellings count. A bare ``_authorize_crew_log_read(...)`` and an
+            # attribute form such as ``self._authorize_crew_log_read(...)`` name the
+            # same gate, and detection is the permissive direction here: a route whose
+            # gate call goes unrecognised is not treated as a door at all, so none of
+            # the suspension rules below ever reach it. Matching the attribute tail as
+            # well keeps that escape shut.
+            names = set()
+            for n in ast.walk(node):
+                if not isinstance(n, ast.Call):
+                    continue
+                if isinstance(n.func, ast.Name):
+                    names.add(n.func.id)
+                elif isinstance(n.func, ast.Attribute):
+                    names.add(n.func.attr)
+            return names
+
+        # Suspension has three spellings -- ``await``, ``async with``, ``async for``
+        # -- and a route that reaches storage through any of them can answer under a
+        # grant taken before the read. Naming the storage calls to look for would
+        # cover whichever ones are spelled today and miss ``run_in_executor``, an
+        # awaited storage coroutine, or a gather. So the rule is stated from the other
+        # side: these are the only two suspension points a door route may hold, and
+        # anything else that suspends is named back. A route that genuinely needs a
+        # third has to say so here, which is the point at which somebody decides
+        # whether it owes a re-check.
+        allowed_awaits = {"_authorize_crew_log_read", "_offload_then_recheck"}
+        # The set holds bare names only, so an attribute-form await -- ``self.gate()``,
+        # ``mod._offload_then_recheck()`` -- is named back rather than admitted. That is
+        # the fail-closed direction on purpose: the ``ast.unparse`` branch below is there
+        # to print an offender readably, not to widen what passes. A door route that
+        # wants an attribute form spells its bare name here and says why.
+
+        def _suspends_outside(node):
+            offenders = []
+            for n in ast.walk(node):
+                if isinstance(n, (ast.AsyncWith, ast.AsyncFor)):
+                    offenders.append(type(n).__name__)
+                    continue
+                if not isinstance(n, ast.Await):
+                    continue
+                awaited = n.value
+                name = ""
+                if isinstance(awaited, ast.Call):
+                    if isinstance(awaited.func, ast.Name):
+                        name = awaited.func.id
+                    else:
+                        name = ast.unparse(awaited.func)
+                if name not in allowed_awaits:
+                    offenders.append(name or ast.unparse(awaited))
+            return offenders
+
+        rechecking = sorted(f.name for f in functions if "_stale_grant_refusal" in _calls(f))
+        assert rechecking == ["_offload_then_recheck"], (
+            "the re-check is reachable from more than one place, so a route can call "
+            f"it out of order or not at all: {rechecking}"
+        )
+
+        doors = [f for f in functions if "_authorize_crew_log_read" in _calls(f)]
+        for door in doors:
+            outside = _suspends_outside(door)
+            assert not outside, (
+                f"{door.name} suspends at {outside}, outside the gate and the helper, "
+                "so it can answer under a grant taken before the read; offload through "
+                "_offload_then_recheck"
             )
-        # A control: an empty set would satisfy the loop above silently.
-        assert len(gated) == 3, f"expected three offloading routes, found {gated}"
+        folded = sorted(f.name for f in doors if "_offload_then_recheck" in _calls(f))
+        # A control: an empty door set would satisfy the loop above silently.
+        assert folded == [
+            "api_crew_log_sessions",
+            "api_crew_log_unit_page",
+            "api_crew_log_unit_projection",
+        ], f"the agent door's offloading routes are not the three expected: {folded}"
+
+        # A second control with a predictable answer: resolve is an agent-door route
+        # that answers from memory, so it owes no re-check and is admitted by all
+        # three rules above while appearing in none of them.
+        resolve = [f for f in doors if f.name == "api_crew_log_resolve"]
+        assert len(resolve) == 1, "resolve is no longer an agent-door route"
+        assert "_offload_then_recheck" not in _calls(resolve[0])
+        assert "_stale_grant_refusal" not in _calls(resolve[0])
+        assert _suspends_outside(resolve[0]) == []
+
+
+class TestTheOffloadHelperOwnsTheOrder:
+    """The three steps after the gate live in one helper, so the helper is pinned.
+
+    The route cases above prove the sequence end to end. These prove the helper
+    itself, and two of the steps it owns have no other cover: the mapping of a
+    storage refusal to a response, and the rule that the route's own shaping runs
+    only after the re-check has held.
+    """
+
+    def _request(self) -> object:
+        _dispatch_tree()
+        return _as_conductor(f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT})
+
+    @pytest.mark.parametrize(
+        ("code", "status", "reported"),
+        [
+            ("invalid_id", 400, "invalid_id"),
+            ("unknown_entry_type", 409, "unknown_entry_type"),
+            ("no_ledger", 422, "no_ledger"),
+            ("", 422, "crew_log_error"),
+        ],
+    )
+    def test_a_storage_refusal_reaches_the_caller_with_a_code_it_can_act_on(
+        self, monkeypatch, code, status, reported
+    ):
+        """MUTATION-SENSITIVE: the refusal is mapped, not raised and not flattened.
+
+        A read can refuse for reasons the caller can do something about -- a
+        malformed unit id is the caller's to fix, a log holding a line this build
+        does not parse is the deployment's -- so each keeps its own status and its
+        own code. Dropping the mapping turns all four into a 500 with no code.
+        """
+        _flag_on(monkeypatch)
+        from kiro_crew.crew_log.errors import CrewLogError
+
+        shaped: list = []
+
+        def _work():
+            raise CrewLogError("the store refused", code=code)
+
+        def _respond(payload):
+            shaped.append(payload)
+            return web.json_response({"shaped": True})
+
+        response = asyncio.run(
+            routes._offload_then_recheck(
+                self._request(), "session_crew_log.read", _work, _respond, unit=CHILD_UNIT
+            )
+        )
+        assert response.status == status
+        body = json.loads(response.text)
+        assert body["code"] == reported
+        assert body["error"] == "the store refused"
+        assert shaped == [], "the route shaped an answer for a read that produced none"
+
+    def test_the_shaping_never_runs_when_the_grant_was_withdrawn(self, monkeypatch):
+        """MUTATION-SENSITIVE: the re-check precedes the shaping, not just the return.
+
+        A helper that shaped first and returned the refusal afterwards would answer
+        correctly and still be wrong: the shaping is the ROUTE's, and running it on a
+        payload the caller may not have means route code has already touched content
+        the withdrawn grant does not cover. So the assertion is that it is not called
+        at all, which no assertion about the response can make.
+        """
+        _flag_on(monkeypatch)
+        read: list = []
+        shaped: list = []
+        refusal = web.json_response({"error": "withdrawn"}, status=403)
+
+        async def _withdrawn(request, operation, *, unit="", listing=False):
+            return refusal
+
+        monkeypatch.setattr(routes, "_stale_grant_refusal", _withdrawn)
+
+        def _work():
+            read.append(1)
+            return {"exists": True}
+
+        def _respond(payload):
+            shaped.append(payload)
+            return web.json_response({"shaped": True})
+
+        response = asyncio.run(
+            routes._offload_then_recheck(
+                self._request(), "session_crew_log.read", _work, _respond, unit=CHILD_UNIT
+            )
+        )
+        assert response is refusal
+        assert read == [1], "the payload was never built, so the order was not exercised"
+        assert shaped == [], "the route's shaping ran under a withdrawn grant"
+
+    def test_the_shaping_receives_the_payload_the_read_produced(self, monkeypatch):
+        """The other half of the order: once the grant holds, the route shapes it.
+
+        Paired with the case above so that "never shapes" cannot pass both. The
+        payload is handed over untouched, which is what lets a route keep a 404 for
+        an absent log and a wrapper key for a fold.
+        """
+        _flag_on(monkeypatch)
+
+        async def _holds(request, operation, *, unit="", listing=False):
+            return None
+
+        monkeypatch.setattr(routes, "_stale_grant_refusal", _holds)
+        payload = {"exists": True, "entries": []}
+        shaped: list = []
+
+        def _respond(seen):
+            shaped.append(seen)
+            return web.json_response({"shaped": True})
+
+        response = asyncio.run(
+            routes._offload_then_recheck(
+                self._request(),
+                "session_crew_log.read",
+                lambda: payload,
+                _respond,
+                unit=CHILD_UNIT,
+            )
+        )
+        assert shaped == [payload]
+        assert shaped[0] is payload
+        assert json.loads(response.text) == {"shaped": True}
+
+    def test_a_route_reaches_the_mapping_for_its_own_read(self, monkeypatch):
+        """The page route answers a storage refusal, not a 500.
+
+        The cases above pin the helper; this pins that a route is wired to it, so a
+        route that stopped offloading through it would not keep this cover.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        from kiro_crew.crew_log.errors import CrewLogError
+
+        def _refusing(*args, **kwargs):
+            raise CrewLogError("bad unit id", code="invalid_id")
+
+        monkeypatch.setattr(routes, "_read_page", _refusing)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 400
+        assert json.loads(response.text)["code"] == "invalid_id"
 
 
 class TestTheListingCarriesTheSameScope:

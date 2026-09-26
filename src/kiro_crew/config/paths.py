@@ -27,6 +27,7 @@ backward compatibility, so existing callers continue to work unchanged.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import stat
@@ -458,10 +459,11 @@ def ensure_data_home() -> Path:
 
     try:
         restrict_dir_to_owner(home)
-    except OSError:
-        logger.warning(
-            "Cannot restrict the data home to owner-only; it may be readable by other users",
-            exc_info=True,
+    except OSError as exc:
+        _warn_cannot_restrict(
+            exc,
+            "Cannot restrict the data home %s to owner-only; it may be readable by other users",
+            home,
         )
     # UNCONDITIONAL, not in an `else`. The home failing to tighten is the case
     # where the crew log root's own mode matters MOST: it is the only remaining
@@ -470,6 +472,36 @@ def ensure_data_home() -> Path:
     # filesystem that refuses both still boots.
     _ensure_crew_log_root(home, restrict_dir_to_owner)
     return home
+
+
+def _warn_cannot_restrict(exc: BaseException, message: str, *args: object) -> None:
+    """Log a failed owner-only tightening as a warning that reads like one.
+
+    Both tightenings on the startup path are best-effort, so the record is a
+    warning either way; what varies is whether a traceback belongs on it. It does
+    for an error nobody expected. It does not for ``EPERM`` on macOS, which is an
+    expected, user-unclearable condition there: the kernel-protected
+    ``com.apple.provenance`` attribute on the data home denies ``chmod`` and
+    ``stat`` on the tagged paths even to their owner, even with Full Disk Access,
+    so every startup on such a machine hits it. Rendering that as a multi-line
+    traceback makes a healthy boot read as a crash and adds nothing the one line
+    does not already say, so that arm names the path, the likely cause and the
+    fact that startup continues. The same errno also means a path owned by another
+    uid (a ``sudo`` run, a root-owned volume), which ``chown`` fixes, so the line
+    names that too. The arm is gated on the platform whose quirk it describes: on
+    Linux ownership is the only common cause, so ``EPERM`` there keeps the
+    traceback like every other unexpected error.
+    """
+    if sys.platform == "darwin" and isinstance(exc, OSError) and exc.errno == errno.EPERM:
+        logger.warning(
+            message + " (%s). The likely cause is a kernel-protected provenance attribute on "
+            "the path, which denies this even to the owner and cannot be cleared; if the path is "
+            "owned by another user instead, chown fixes it. The gateway continues",
+            *args,
+            exc.strerror or "operation not permitted",
+        )
+        return
+    logger.warning(message, *args, exc_info=True)
 
 
 def _ensure_crew_log_root(home: Path, restrict: Callable[[Path], None]) -> None:
@@ -526,11 +558,11 @@ def _ensure_crew_log_root(home: Path, restrict: Callable[[Path], None]) -> None:
                 continue
             kind_root.mkdir(parents=True, exist_ok=True)
             restrict(kind_root)
-    except (OSError, RuntimeError):
-        logger.warning(
+    except (OSError, RuntimeError) as exc:
+        _warn_cannot_restrict(
+            exc,
             "Cannot restrict %s to owner-only; crew logs may be readable by other users",
             root,
-            exc_info=True,
         )
 
 

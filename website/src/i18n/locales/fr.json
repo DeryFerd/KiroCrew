@@ -10066,7 +10066,8 @@
       "chatFooter": {
         "compacting": "Compactage…",
         "killing": "Arrêt forcé…",
-        "stopping": "Arrêt…"
+        "stopping": "Arrêt…",
+        "thinking": "Réflexion…"
       },
       "chatNavPanel": {
         "link": "Lien",

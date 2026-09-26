@@ -10205,7 +10205,8 @@
       "chatFooter": {
         "compacting": "Сжатие контекста…",
         "killing": "Завершение…",
-        "stopping": "Остановка…"
+        "stopping": "Остановка…",
+        "thinking": "Размышление…"
       },
       "chatNavPanel": {
         "link": "Ссылка",

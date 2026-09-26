@@ -10066,7 +10066,8 @@
       "chatFooter": {
         "compacting": "Compattazione in corso…",
         "killing": "Chiusura forzata…",
-        "stopping": "Arresto in corso…"
+        "stopping": "Arresto in corso…",
+        "thinking": "Riflessione…"
       },
       "chatNavPanel": {
         "link": "Link",

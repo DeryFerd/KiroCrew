@@ -8912,6 +8912,11 @@
       "unexpected_response": "Unerwartete Antwort",
       "deploy_failed": "Bereitstellung fehlgeschlagen",
       "stale_preview_retry": "Die App hat sich seit der Prüfung geändert — versuche es erneut."
+    },
+    "mcpApp": {
+      "from_app": "Von der App {{app}} gesendet",
+      "delivery_failed": "Deine Nachricht konnte nicht zugestellt werden – versuch es erneut.",
+      "from_app_tooltip": "Diese App hat eine Nachricht in den Chat gestellt — Kiro behandelt sie als Worte der App, nicht als deine"
     }
   },
   "hooks": {

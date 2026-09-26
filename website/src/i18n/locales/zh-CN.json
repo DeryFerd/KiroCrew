@@ -8791,6 +8791,11 @@
       "unexpected_response": "意外的响应",
       "deploy_failed": "部署失败",
       "stale_preview_retry": "检查后应用已更改 — 请重试。"
+    },
+    "mcpApp": {
+      "from_app": "由 {{app}} 应用发送",
+      "delivery_failed": "无法送达你的消息，请重试。",
+      "from_app_tooltip": "该应用向聊天中发布了一条消息 — Kiro 将其视为应用的话，而不是你的话"
     }
   },
   "hooks": {

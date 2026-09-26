@@ -9033,6 +9033,11 @@
       "unexpected_response": "Réponse inattendue",
       "deploy_failed": "Échec du déploiement",
       "stale_preview_retry": "L’application a changé depuis la vérification — réessaie."
+    },
+    "mcpApp": {
+      "from_app": "Envoyé par l'application {{app}}",
+      "delivery_failed": "Impossible de transmettre ton message — réessaie.",
+      "from_app_tooltip": "Cette app a publié un message dans la discussion — Kiro le traite comme les mots de l'app, pas les tiens"
     }
   },
   "hooks": {

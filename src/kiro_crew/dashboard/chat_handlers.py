@@ -2661,7 +2661,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # Shallow copies, so the off-loop render below reads a frozen entry while
     # the loop keeps editing the live one; the view helper does the redaction.
     queue_snapshot = [
-        {"id": q["id"], "content": q["content"], "meta": dict(q.get("meta") or {})}
+        {
+            "id": q["id"],
+            "content": q["content"],
+            "kind": q.get("kind", ""),
+            "meta": dict(q.get("meta") or {}),
+        }
         for q in slot._queue
     ]
     context_fields = await _context_snapshot_fields(state, slot)

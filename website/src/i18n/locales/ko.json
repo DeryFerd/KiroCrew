@@ -8791,6 +8791,11 @@
       "unexpected_response": "예기치 않은 응답",
       "deploy_failed": "배포에 실패했습니다",
       "stale_preview_retry": "확인 후 앱이 변경되었습니다 — 다시 시도하세요."
+    },
+    "mcpApp": {
+      "from_app": "{{app}} 앱에서 보냄",
+      "delivery_failed": "메시지를 전달하지 못했습니다. 다시 시도해 주세요.",
+      "from_app_tooltip": "이 앱이 채팅에 메시지를 게시했습니다 — Kiro는 이를 사용자의 말이 아닌 앱의 말로 취급합니다"
     }
   },
   "hooks": {

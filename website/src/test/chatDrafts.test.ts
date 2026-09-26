@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts, setDraft, __resetForTests } from '../utils/chatDrafts'
+import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts, setDraft, appendTypedText, typedDuringCreate, __resetForTests } from '../utils/chatDrafts'
 import { DRAFT_MAX_STORE_BYTES } from '../utils/draftConstants'
 
 describe('chatDrafts', () => {
@@ -334,5 +334,51 @@ describe('draft merges keep the draft verbatim except for the newlines they repl
     // treating that as already restored drops the message the user must retry.
     expect(mergeRecoveredDraft('please run tests first', 'run tests'))
       .toBe('please run tests first\n\nrun tests')
+  })
+})
+
+describe('typedDuringCreate — text typed while a new session was being created', () => {
+  it('returns everything typed into an empty composer', () => {
+    expect(typedDuringCreate('', 'hello new session')).toBe('hello new session')
+  })
+
+  it('keeps leading whitespace typed into an empty composer', () => {
+    expect(typedDuringCreate('', '    indented code')).toBe('    indented code')
+    expect(typedDuringCreate('', '\nsecond line')).toBe('\nsecond line')
+    expect(typedDuringCreate('', '  ')).toBe('  ')
+  })
+
+  it('returns the text appended to the old draft verbatim, whitespace included', () => {
+    expect(typedDuringCreate('old draft', 'old draft fresh text')).toBe(' fresh text')
+    expect(typedDuringCreate('old draft\n', 'old draft\n\nnext line')).toBe('\nnext line')
+    expect(typedDuringCreate('old draft', 'old draft\n    indented code')).toBe('\n    indented code')
+    expect(typedDuringCreate('old draft', 'old draft   ')).toBe('   ')
+  })
+
+  it('returns null when nothing was typed', () => {
+    expect(typedDuringCreate('', '')).toBeNull()
+    expect(typedDuringCreate('old draft', 'old draft')).toBeNull()
+  })
+
+  it('returns null when the old draft itself was edited, so that text stays where it is', () => {
+    expect(typedDuringCreate('old draft', 'new draft')).toBeNull()
+    expect(typedDuringCreate('old draft', 'old')).toBeNull()
+    // A send clears the composer before its create; that is not typing.
+    expect(typedDuringCreate('the sent message', '')).toBeNull()
+  })
+})
+
+describe('appendTypedText — joining carried text onto the new composer', () => {
+  it('returns the typed text as-is into an empty composer', () => {
+    expect(appendTypedText('', 'hello')).toBe('hello')
+    expect(appendTypedText('', '   ')).toBe('   ')
+  })
+
+  it('keeps whitespace-only typing after a prefill instead of dropping it', () => {
+    expect(appendTypedText('seeded prompt', '  \n')).toBe('seeded prompt\n\n  \n')
+  })
+
+  it('joins typed text onto a prefill with a paragraph break', () => {
+    expect(appendTypedText('seeded prompt\n', 'typed')).toBe('seeded prompt\n\ntyped')
   })
 })

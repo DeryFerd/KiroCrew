@@ -1032,6 +1032,16 @@ interface ChatState {
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
   creatingSlot: boolean
+  /** requestId of the most recent FOREGROUND create (one that will take focus)
+   *  still in flight; null once it resolves. ChatPage snapshots the composer
+   *  each time this changes, so a snapshot always belongs to one create. A
+   *  background create never sets it. */
+  foregroundCreateId: string | null
+  /** The slot a foreground create ACTIVATED and that create's requestId,
+   *  cleared when the next foreground create starts. ChatPage carries text
+   *  typed during a create only on this activation, and only when the
+   *  requestId matches its snapshot (see ChatPage's create-carry note). */
+  lastCreatedActivation: { slot: string; requestId: string } | null
   slotContextPct: Record<string, number>
   // Real token counts behind the context ring (from the adapter usage_update),
   // keyed by slot. Used for the ring tooltip so "44%" shows its absolute
@@ -1273,6 +1283,8 @@ const initialState: ChatState = {
   pendingInput: null,
   agentSwitchNotice: null,
   creatingSlot: false,
+  foregroundCreateId: null,
+  lastCreatedActivation: null,
   slotContextPct: {},
   slotContextTokens: {},
   voicePlaying: false,
@@ -7105,13 +7117,24 @@ const chatSlice = createSlice({
         }
         seedContextUsage(state, key, action.payload.context)
       })
-      .addCase(createSlot.pending, (state) => { state.creatingSlot = true })
-      .addCase(createSlot.rejected, (state) => { state.creatingSlot = false })
+      .addCase(createSlot.pending, (state, action) => {
+        state.creatingSlot = true
+        const arg = action.meta.arg
+        if (typeof arg === 'string' || arg?.activate !== false) {
+          state.foregroundCreateId = action.meta.requestId
+          state.lastCreatedActivation = null
+        }
+      })
+      .addCase(createSlot.rejected, (state, action) => {
+        state.creatingSlot = false
+        if (state.foregroundCreateId === action.meta.requestId) state.foregroundCreateId = null
+      })
       .addCase(createSlot.fulfilled, (state, action) => {
         // The create POST resolved, so clear the pending flag regardless of
         // whether we activate below. Otherwise the switched-away early-return
         // would strand the "Creating…" spinner on forever.
         state.creatingSlot = false
+        if (state.foregroundCreateId === action.meta.requestId) state.foregroundCreateId = null
         // Switched-away guard: if the user moved to a different
         // session while this create was pending (a slow "Creating…" under memory
         // pressure), do NOT hijack the view. The new slot is registered by
@@ -7136,6 +7159,7 @@ const chatSlice = createSlice({
           state.slotHistory = pushHistory(state.slotHistory, state.activeSlot)
         }
         state.activeSlot = action.payload.key
+        state.lastCreatedActivation = { slot: action.payload.key, requestId: action.meta.requestId }
         // The replay floor belongs to the slot that was streaming, not to this
         // one. `state.lastChunkSeq` is the ACTIVE slot's floor, and a brand-new
         // chat has no replay history at all — carrying the outgoing slot's floor

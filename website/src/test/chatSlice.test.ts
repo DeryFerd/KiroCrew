@@ -3093,6 +3093,71 @@ describe('creatingSlot — New Chat pending flag', () => {
   })
 })
 
+describe('create activation tracking — which create activated which slot', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+  const pending = (requestId: string, arg?: { activate?: boolean }) => ({ type: 'chat/createSlot/pending', meta: { arg, requestId, requestStatus: 'pending' as const } })
+  const fulfilled = (requestId: string, origin: string | null, key: string, activate = true) => ({
+    type: 'chat/createSlot/fulfilled',
+    meta: { arg: undefined, requestId, requestStatus: 'fulfilled' as const, originActiveSlot: origin, activate },
+    payload: { key },
+  })
+  const rejected = (requestId: string) => ({ type: 'chat/createSlot/rejected', meta: { arg: undefined, requestId, requestStatus: 'rejected' as const }, error: {} })
+
+  it('records the activated slot with the requestId of the create that activated it', () => {
+    let state = reducer({ ...initial, activeSlot: 'A' }, pending('r1'))
+    expect(state.foregroundCreateId).toBe('r1')
+    state = reducer(state, fulfilled('r1', 'A', 'new-slot'))
+    expect(state.activeSlot).toBe('new-slot')
+    expect(state.lastCreatedActivation).toEqual({ slot: 'new-slot', requestId: 'r1' })
+    expect(state.foregroundCreateId).toBeNull()
+  })
+
+  it('records no activation when the user switched away during the create', () => {
+    const state = reducer(reducer({ ...initial, activeSlot: 'B' }, pending('r1')), fulfilled('r1', 'A', 'new-slot'))
+    expect(state.activeSlot).toBe('B')
+    expect(state.lastCreatedActivation).toBeNull()
+  })
+
+  it('a background create neither arms a foreground create nor records an activation', () => {
+    let state = reducer({ ...initial, activeSlot: 'A' }, pending('bg', { activate: false }))
+    expect(state.foregroundCreateId).toBeNull()
+    state = reducer(state, fulfilled('bg', 'A', 'bg-slot', false))
+    expect(state.activeSlot).toBe('A')
+    expect(state.lastCreatedActivation).toBeNull()
+  })
+
+  it('a background create resolving does not clear a foreground create still in flight', () => {
+    let state = reducer({ ...initial, activeSlot: 'A' }, pending('bg', { activate: false }))
+    state = reducer(state, pending('fg'))
+    state = reducer(state, fulfilled('bg', 'A', 'bg-slot', false))
+    expect(state.foregroundCreateId).toBe('fg')
+    state = reducer(state, fulfilled('fg', 'A', 'fg-slot'))
+    expect(state.lastCreatedActivation).toEqual({ slot: 'fg-slot', requestId: 'fg' })
+  })
+
+  it('a second foreground create takes over the pending id, and the first one activating carries its own id', () => {
+    let state = reducer({ ...initial, activeSlot: 'A' }, pending('r1'))
+    state = reducer(state, pending('r2'))
+    expect(state.foregroundCreateId).toBe('r2')
+    state = reducer(state, fulfilled('r1', 'A', 'slot-1'))
+    expect(state.lastCreatedActivation).toEqual({ slot: 'slot-1', requestId: 'r1' })
+    expect(state.foregroundCreateId).toBe('r2')
+  })
+
+  it('a rejected create clears its own pending id only', () => {
+    let state = reducer({ ...initial, activeSlot: 'A' }, pending('r1'))
+    state = reducer(state, rejected('r1'))
+    expect(state.foregroundCreateId).toBeNull()
+    state = reducer(reducer(state, pending('r2')), rejected('r1'))
+    expect(state.foregroundCreateId).toBe('r2')
+  })
+
+  it('the next foreground create clears the previous activation', () => {
+    const state = reducer({ ...initial, activeSlot: 'A', lastCreatedActivation: { slot: 'old', requestId: 'r0' } }, pending('r1'))
+    expect(state.lastCreatedActivation).toBeNull()
+  })
+})
+
 describe('selectSlotSubagentsActive', () => {
   const initial = reducer(undefined, { type: '@@INIT' })
   const withSlot = { ...initial, activeSlot: 'slot-1' }

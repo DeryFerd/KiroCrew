@@ -528,12 +528,18 @@ export default function ChatPane({
   // The transcript row whose bubble the banner is standing in for. The list
   // hides it (ts-keyed, index fallback — see ChatMessageList.hiddenRow);
   // memoised so the memo'd list does not re-render on every pane render.
+  // `stripUncovered` is the hook's BOOLEAN "the row's action strip is still on
+  // screen below the card" (derived from occlusion, see usePinnedPrompt), not
+  // the fold height: liveH moves every scroll frame of the fold, and keying the
+  // memo on it would re-render the list per frame for a marker that only flips
+  // at its two edges.
   const pinnedState = pin.pinned
   const pinnedTs = pinnedState?.ts
   const pinnedIdx = pinnedState?.idx
+  const pinnedStripUncovered = pinnedState?.stripUncovered === true
   const pinHiddenRow = useMemo(
-    () => (pinnedIdx == null ? undefined : { ts: pinnedTs, index: pinnedIdx }),
-    [pinnedTs, pinnedIdx],
+    () => (pinnedIdx == null ? undefined : { ts: pinnedTs, index: pinnedIdx, stripUncovered: pinnedStripUncovered }),
+    [pinnedTs, pinnedIdx, pinnedStripUncovered],
   )
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.

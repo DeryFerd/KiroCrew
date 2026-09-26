@@ -14,8 +14,8 @@ import { createPortal } from 'react-dom'
 import { InstantTip, useInstantTip } from './InstantTip'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
-import { useAppSelector, useAppDispatch } from '../store'
-import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone, setAgentSwitchNotice, switchSlot } from '../store/chatSlice'
+import { useAppStore, useAppSelector, useAppDispatch } from '../store'
+import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone, setAgentSwitchNotice, switchSlot, selectSlotMessages } from '../store/chatSlice'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { useSlotId } from '../providers/SlotContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
@@ -1079,6 +1079,11 @@ function ChatInput({
   const disabled = disabledProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
+  // The store handle, read at click time (not subscribed) so "Optimize prompt"
+  // can pull THIS pane's slot messages without re-rendering every composer on
+  // each streamed frame. useAppStore returns the Provider-injected store, the
+  // same pattern ChatPane uses for its at-send reads.
+  const chatStore = useAppStore()
   const pendingApprovalRaw = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
   // Suppressed at the READ so every consumer (bar, ghost, pill, rounded-corner
   // class) follows one judgment instead of each render site re-deciding.
@@ -1915,7 +1920,14 @@ function ChatInput({
     onChange(next.value)
     requestAnimationFrame(() => composerControl()?.setSelection(next.caret, next.caret, { focus: true }))
   }, [value, onChange, composerControl])
-  const chatMessages = useAppSelector(s => s.chat.messages)
+  // The optimizer's context is the ONLY reader of this slot's message history,
+  // and only when "Optimize prompt" is clicked. Subscribing here forced every
+  // mounted composer to re-render on each streamed frame (Immer hands back a new
+  // `state.messages` reference per flush, so the `===` selector always tripped),
+  // which multiplied with N split panes. Read the slot's own messages at click
+  // time instead — `selectSlotMessages` returns THIS pane's slot (falling back
+  // to the active mirror when this pane IS active), which also fixes a bug where
+  // a non-active pane sent the *active* pane's conversation as optimizer context.
   /** The persisted drag-to-resize preference. Read `manualHeight` below instead —
    *  this is the raw stored value and is not what the composer renders at. */
   const [manualHeightPref, setManualHeight] = useState<number | null>(() => {
@@ -2691,7 +2703,17 @@ function ChatInput({
     // Pin the slot that owns this optimize so the overlay and the completion
     // handler stay bound to it across session switches.
     optimizeSlotRef.current = slotId
-    const context = chatMessages
+    // Read THIS pane's slot messages at click time (not via a live subscription),
+    // so a non-active pane optimizes against its own conversation, not the active
+    // pane's. When slotId is null (no SlotProvider / global composer) read the
+    // active mirror, which is exactly what the old `s.chat.messages` subscription
+    // returned; selectSlotMessages also falls back to that mirror for the active
+    // slot, so the focused composer's behavior is preserved.
+    const rootState = chatStore.getState()
+    const slotMessages = slotId
+      ? selectSlotMessages(rootState, slotId)
+      : rootState.chat.messages
+    const context = slotMessages
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(-10)
       .map(m => (m.content || '').slice(0, 200))
@@ -2704,7 +2726,7 @@ function ChatInput({
     const referenced = pruneBlocks(txt, pasteBlocks)
     const pastes = referenced.map(b => ({ seq: b.seq, content: b.content }))
     runOptimize({ prompt: txt, context, pastes, slotId })
-  }, [runOptimize, chatMessages, pasteBlocks, slotId])
+  }, [runOptimize, pasteBlocks, slotId, chatStore])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Cmd/Ctrl+Shift+V → next paste inserts full text inline (no chip collapse).

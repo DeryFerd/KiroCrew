@@ -148,6 +148,28 @@ class TestSignature(_Env):
         accepted, _ = webhook.enqueue(body, _sign(body, "some-other-secret"))
         self.assertFalse(accepted)
 
+    def test_a_non_ascii_signature_is_refused_not_raised(self) -> None:
+        """A non-ASCII header is a wrong signature, never an unhandled crash.
+
+        ``hmac.compare_digest`` raises ``TypeError`` when either ``str`` operand
+        holds a non-ASCII character, and this header is attacker-chosen. Raising
+        out of ``enqueue`` answered the gateway with a 500 and a traceback
+        instead of the intended 401 ``signature mismatch``, so the delivery never
+        landed on the refusal path the sender is supposed to see.
+
+        ``"é"`` is the honest-shaped header. ``"\\udcff"`` is the second case and
+        the one a plain ASCII test misses: aiohttp decodes a raw non-UTF-8 header
+        byte into a lone surrogate, which is a ``str`` that cannot even be
+        UTF-8-encoded — so a fix that encodes without ``surrogatepass`` would
+        trade the ``TypeError`` for a ``UnicodeEncodeError`` and still raise.
+        """
+        body = _body()
+        for bad in ("é", "\udcff"):
+            accepted, detail = webhook.enqueue(body, bad)
+            self.assertFalse(accepted, f"{bad!r} must not authenticate")
+            self.assertEqual(detail, "signature mismatch")
+        self.assertEqual(webhook.queue_depth(), 0)
+
     def test_verify_signature_is_constant_time(self) -> None:
         """Pin the use of compare_digest rather than ``==``."""
         import inspect

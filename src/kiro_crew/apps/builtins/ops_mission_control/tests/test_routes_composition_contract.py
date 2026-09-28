@@ -370,6 +370,30 @@ class TestWebhookIngressOrder(_Home):
             ],
         )
 
+    async def test_a_non_ascii_signature_is_a_401_not_a_500(self) -> None:
+        """The wire-level shape of the same refusal.
+
+        A non-ASCII ``X-OMC-Signature`` must reach the 401 a wrong hex signature
+        reaches, never a 500: ``hmac.compare_digest`` raises ``TypeError`` on
+        such a value, and aiohttp answers an unhandled exception with a traceback
+        while the audit line below never runs. Pinning the status is the point —
+        a malformed header stays indistinguishable from a wrong one.
+        """
+        resp = await self._post(b"{not json", signature="é")
+        self.assertEqual(resp.status, 401)
+        self.assertEqual(
+            await resp.json(), {"error": "signature mismatch", "code": "webhook_rejected"}
+        )
+        self.assertEqual(webhook.queue_depth(), 0)
+        self.assertEqual(
+            self.audited.call_args_list,
+            [
+                mock.call(
+                    "webhook_ingest", "signature mismatch", "rejected", error="signature mismatch"
+                )
+            ],
+        )
+
     async def test_a_signed_body_that_is_not_json_is_a_400(self) -> None:
         body = b"not json at all"
         resp = await self._post(body, signature=_sign(body))

@@ -8,6 +8,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { stripKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
+import { isTouchDevice } from '../../utils/isTouchDevice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
 import SelectionToolbar, { useSelectionActions } from '../../components/SelectionToolbar'
@@ -249,6 +250,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     setRawMode(!rawMode)
   }
   const selectionActions = useSelectionActions(onQuote, onAsk)
+  const touch = isTouchDevice()
+  const toolbarActions = touch ? selectionActions.filter(a => a.id !== 'copy') : selectionActions
 
   const { term, caseSensitive } = useSearchHighlight()
   const currentOcc = useCurrentOcc()
@@ -580,13 +583,16 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           rather than of this gate. When the browser does drop such a range, the
           reader loses the highlight and NOT the text or the toolbar: on desktop
           `selectionchange` is gated to touch (see `SelectionToolbar`), so nothing
-          re-checks the selection and the snapshot stays clickable. On touch that
-          path is live, so a collapse there would dismiss the toolbar after its
-          debounce -- untested here, and worth knowing before relying on it.
+          re-checks the selection and the snapshot stays clickable.
           The three sibling gates below (file chips, turn stats, footer) stay
           `!isStreaming` -- those are end-of-turn summaries, with no partial form
-          to show. */}
-      {selectionActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
+          to show.
+          On a touch device the row DOCKS above the composer instead of floating
+          at the selection: there the platform draws its own handles, magnifier
+          and Copy callout around the selection, and a row drawn on top of them
+          took the taps meant for the handles. Copy is left to that callout, so
+          the dock carries only what the platform cannot do (Quote, Ask). */}
+      {toolbarActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={toolbarActions} dock={touch} />}
     </div>
     </MessageContextMenu>
     {/* Directly under the bubble, above the file chips: the strip says how THIS

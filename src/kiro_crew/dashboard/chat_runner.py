@@ -68,7 +68,7 @@ from kiro_crew.acp.types import (
     TurnUsage,
     classify_stop_reason,
 )
-from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
+from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO, ACP_BACKENDS_COMPACT
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_discovery import (
     agent_welcome_message,
@@ -374,6 +374,7 @@ from kiro_crew.dashboard.recovery_replays import (
 # turn loop itself consumes the structured outcome.
 from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     DirectiveOutcome,
+    _reset_conversation,
     apply_session_directive,
     apply_session_directive_outcome,
 )
@@ -4883,6 +4884,75 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
     _pending_reset_retries[slot.key] = (slot, asyncio.create_task(_retry()))
 
 
+async def _slash_command_backend(state: DashboardState, session_key: str) -> str:
+    """The backend a slash command on *session_key* would reach.
+
+    A positively live provider answers for itself (peeked, never created);
+    otherwise the factory's member-aware selection does, so a dead row cannot
+    answer for its successor.
+    """
+    provider = state.sessions.get_provider(session_key)
+    if provider is not None and await state.sessions.is_provider_alive(session_key) is True:
+        return capabilities_of(provider).backend
+    agent_cfg = KiroCrewConfig.load().agent
+    backend = select_provider_backend(
+        session_key,
+        getattr(agent_cfg, "member_acp_backend", ""),
+        getattr(agent_cfg, "acp_backend", ""),
+    )
+    return backend if isinstance(backend, str) else ACP_BACKEND_KIRO
+
+
+async def _answer_slash_without_channel(
+    state: DashboardState, slot: _ChatSlot, session_key: str, command: str
+) -> None:
+    """Answer a harness command the backend cannot run, as a local command.
+
+    ``/clear`` queues the discard ``reset_conversation`` queues and applies it
+    through the same consumer, so the next turn starts with no memory of this
+    conversation. The transcript stays, as it does for that tool. A session that
+    refuses the discard (busy, sub-agents attached) keeps it queued for a later
+    turn boundary.
+    """
+    if command.lower() == "/clear":
+        await _reset_conversation(slot, session_key, {})
+        torn_down = await _consume_pending_reset(state, slot, allow_discard=True)
+        # The consumer's True also covers a queued project reset; only a spent
+        # discard flag means THIS conversation was dropped.
+        cleared = torn_down and not slot._pending_discard_conversation_key
+        outcome = "discarded" if cleared else "queued"
+        if torn_down:
+            schedule_eager_spawn(state, slot)
+        if cleared:
+            # The plan goes with the conversation, as on kiro's native /clear:
+            # a kept pill would be rebuilt into the fresh one at its cold start.
+            if slot.set_todo(None):
+                state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
+            text = (
+                "🗑 Conversation cleared. Earlier messages stay visible, but the agent "
+                "no longer remembers them."
+            )
+        else:
+            text = (
+                "🗑 Clear queued. The agent is busy right now, so your next reply "
+                "may still remember this conversation."
+            )
+    else:
+        outcome = "unsupported_backend"
+        text = f"⚠ `{command}` doesn't work with KAS. It was not sent to the agent."
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=command,
+        tool_kind="slash_command",
+        outcome=outcome,
+        metadata={"slot": slot.key},
+    )
+    slot.append("assistant", text, "msg msg-a")
+    state.push_slots_update()
+
+
 async def _consume_pending_reset(
     state: DashboardState, slot: _ChatSlot, *, allow_discard: bool = False
 ) -> bool:
@@ -4904,7 +4974,10 @@ async def _consume_pending_reset(
     would hand the next turn a reconstruction of the conversation the caller
     discarded.
 
-    ``allow_discard`` IS THE BOUNDARY, and only the end-of-turn caller sets it.
+    ``allow_discard`` IS THE BOUNDARY. Two callers set it: the end-of-turn one,
+    and a no-channel ``/clear`` (``_answer_slash_without_channel``), which runs
+    before any session work and relies on ``skip_if_busy`` to refuse under a
+    streaming channel turn.
     The project reset is consumed at three points including the one just before
     ``get_or_create``, and that pre-acquire point is safe for it only in the
     narrow sense its own comment claims: no lock is held by THIS turn, so
@@ -7844,10 +7917,11 @@ async def _end_turn_tail(
     if outcome is not None:
         # End-of-turn fallback: catches set_project and reset_conversation calls
         # that fired mid-turn, after the start-of-turn consume already ran. This
-        # is the ONLY caller that may consume a queued conversation discard --
-        # the earlier consume points run just before a turn acquires the
-        # session, where a teardown can land under a channel turn already
-        # streaming on it. Guarded because a raise here would skip the queue
+        # is the only TURN-PATH caller that may consume a queued conversation
+        # discard -- the earlier consume points run just before a turn acquires
+        # the session, where a teardown can land under a channel turn already
+        # streaming on it. A no-channel /clear also consumes one, relying on
+        # skip_if_busy for that case. Guarded because a raise here would skip the queue
         # hand-off below, silently stranding queued work at the end of an
         # otherwise successful turn.
         try:
@@ -9800,23 +9874,8 @@ async def _run_chat(
     # member-aware successor selection. Acquisition still confirms support,
     # because the provider can be replaced between this probe and the claim.
     if first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
-        _todos_provider = state.sessions.get_provider(session_key)
-        _todos_provider_alive = (
-            await state.sessions.is_provider_alive(session_key)
-            if _todos_provider is not None
-            else None
-        )
-        if _todos_provider is not None and _todos_provider_alive is True:
-            _todos_supported = capabilities_of(_todos_provider).supports_native_todos
-        else:
-            _todos_agent_cfg = KiroCrewConfig.load().agent
-            _todos_backend = select_provider_backend(
-                session_key,
-                getattr(_todos_agent_cfg, "member_acp_backend", ""),
-                getattr(_todos_agent_cfg, "acp_backend", ""),
-            )
-            _todos_supported = capabilities_for(_todos_backend).supports_native_todos
-        if not _todos_supported:
+        _todos_backend = await _slash_command_backend(state, session_key)
+        if not capabilities_for(_todos_backend).supports_native_todos:
             _refuse_blocked_slash()
             return
 
@@ -9887,6 +9946,22 @@ async def _run_chat(
                 "msg msg-a",
             )
             state.push_slots_update()
+            return
+
+    # ── Harness commands on KAS, which has no command channel ──
+    # The session handle runs a command natively only on kiro-cli; KAS gets it
+    # as session/prompt text, and KAS has no built-in /clear there, so the
+    # model reads "/clear" as a request and the conversation stays. KAS also
+    # refuses _kiro.dev/commands/execute itself, so that verb is no way out.
+    # Answer here instead, before any session work: /clear takes the same discard
+    # reset_conversation queues, and every other command gets a notice rather
+    # than reaching the model. /compact never gets here: its gate above already
+    # answers for such a backend, and a /todos that got past its own gate is on
+    # a harness that runs it natively.
+    if is_slash and not _is_cc_provider and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
+        if await _slash_command_backend(state, session_key) == ACP_BACKEND_KAS:
+            turn_exit.local_command = first_word
+            await _answer_slash_without_channel(state, slot, session_key, first_word)
             return
 
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)

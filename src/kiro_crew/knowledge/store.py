@@ -20,6 +20,11 @@ from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
 
 from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index, sqlite3
+from ..sqlite_quarantine import (
+    SidecarNotMovable,
+    is_damaged_database_error,
+    quarantine_sqlite_file,
+)
 
 #: Test-only switch. ``False`` in production: every connection keeps SQLite's
 #: own thread-affinity guard (``check_same_thread=True``), so a caller that
@@ -763,6 +768,10 @@ _RECLAIM_CHUNK = 200
 class KnowledgeStore:
     def __init__(self, db_path: str, *, read_only: bool = False):
         self._db_path = db_path
+        # Notices for the user about how this library was opened (a damaged
+        # file moved aside), the same channel ``TaskStore.warnings`` is. The
+        # gateway shows each one on the dashboard.
+        self.warnings: list[str] = []
         # A read-only store runs neither the schema DDL nor `_migrate()` and opens
         # every connection with SQLite `mode=ro`, so a write is refused by the
         # engine rather than by convention -- see `open_read_only`.
@@ -840,9 +849,66 @@ class KnowledgeStore:
         # `_load_graph()` call sites and every query path stay fully guarded.
         if read_only:
             return
-        with _ON_LOOP_DB_GUARD.allow_on_loop():
-            self._init_schema()
-            self._migrate()
+        try:
+            with _ON_LOOP_DB_GUARD.allow_on_loop():
+                self._init_schema()
+                self._migrate()
+        except BaseException:
+            # The store is never handed out, so its connection would only be
+            # freed by the cyclic collector -- and an open handle keeps the
+            # file from being moved aside on Windows.
+            conn = getattr(self._thread_local, "conn", None)
+            if conn is not None:
+                conn.close()
+                self._thread_local.conn = None
+            raise
+
+    @classmethod
+    def open_recovering(cls, db_path: str) -> "KnowledgeStore":
+        """Open the library, moving a damaged file aside instead of failing.
+
+        The gateway builds its store before the listener binds, so a file SQLite
+        reports as damaged (``file is not a database``, ``database disk image is
+        malformed``) would stop every start. Such a file and its sidecars are
+        renamed to ``knowledge.db.corrupt-<utc>`` and an empty library is
+        created. The old file is kept, never deleted, and one warning names it,
+        in the log and on :attr:`warnings` for the dashboard. When its
+        ``-wal`` or ``-journal`` will not move, nothing moves and the error is
+        raised: a new library would overwrite those pages. Any other error --
+        a locked, busy, read-only or full database -- is raised unchanged.
+        """
+        try:
+            return cls(db_path)
+        except sqlite3.DatabaseError as exc:
+            if not is_damaged_database_error(exc):
+                raise
+            reason = str(exc)
+        try:
+            moved = quarantine_sqlite_file(Path(db_path), data_sidecars_must_move=True)
+        except SidecarNotMovable as exc:
+            logger.warning(
+                "knowledge: %s is damaged (%s) and was kept in place, not replaced: %s",
+                db_path,
+                reason,
+                exc,
+            )
+            raise
+        logger.warning(
+            "knowledge: %s was damaged (%s); moved aside as %s and started an empty library. "
+            "Sources must be added again; documents added inline exist only in the kept copy.%s",
+            db_path,
+            reason,
+            moved.target.name,
+            f" Sidecar(s) left in place: {', '.join(moved.left)}." if moved.left else "",
+        )
+        store = cls(db_path)
+        # Plain words for the dashboard; the path, the SQLite error and any
+        # sidecar detail stay in the log above.
+        store.warnings.append(
+            "Your knowledge library file was damaged, so a new empty library was started. "
+            f"The old file was kept as {moved.target.name}. Add your sources again."
+        )
+        return store
 
     @classmethod
     def open_read_only(cls, db_path: str) -> "KnowledgeStore":
@@ -896,7 +962,13 @@ class KnowledgeStore:
             conn = sqlite3.connect(self._db_path, **connect_kwargs)
             if test_mode:
                 conn._owner_ident = threading.get_ident()
-            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.Error:
+                # A file that is not a database fails here; release the handle so
+                # the caller can move the file aside.
+                conn.close()
+                raise
         conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row

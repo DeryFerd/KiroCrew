@@ -1,6 +1,9 @@
-import { Fragment, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode, type SyntheticEvent } from 'react'
+import { Link, Type } from 'lucide-react'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../../components/ui/context-menu'
 import { isTouchDevice } from '../../utils/isTouchDevice'
+import { copyToClipboard } from '../../utils/clipboard'
+import { i18nT } from '../../i18n/t'
 
 export interface MessageMenuItem {
   id: string
@@ -9,6 +12,19 @@ export interface MessageMenuItem {
   onSelect: () => void
   /** Draw a separator ABOVE this item. */
   separatorBefore?: boolean
+}
+
+interface LinkTarget { href: string; text: string }
+
+/** The link under the gesture, bounded by the bubble so an anchor wrapping the
+ *  whole transcript never counts. `href` is the resolved absolute URL, which is
+ *  what the browser's own "Copy link address" copies. */
+function linkAt(event: SyntheticEvent<HTMLElement>): LinkTarget | null {
+  const target = event.target
+  if (!(target instanceof Element)) return null
+  const anchor = target.closest('a[href]')
+  if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return null
+  return { href: anchor.href, text: (anchor.textContent ?? '').trim() }
 }
 
 /**
@@ -27,17 +43,41 @@ export interface MessageMenuItem {
  * Copy / Look Up callout as well. On touch the message's text belongs to the
  * platform's selection; the action row below the bubble carries the actions.
  *
- * Deliberately does NOT own any action: the host lists the same handlers its
- * action row already has (quote, copy, copy link, pin, edit), so the two entry
- * points can never disagree about what a message can do.
+ * Deliberately does NOT own any message action: the host lists the same
+ * handlers its action row already has (quote, copy, copy link, pin, edit), so
+ * the two entry points can never disagree about what a message can do.
+ *
+ * Opening this menu suppresses the browser's own, so a gesture that lands on a
+ * link adds Copy link address (the item the native and desktop menus offer)
+ * and Copy link text (asked for by the reporter of issue #18536). The link
+ * is read on pointerdown as well as contextmenu, so it is known before Radix
+ * opens the menu. A touch device gets no menu, so its native long-press keeps
+ * the platform's own link actions.
  */
-export default function MessageContextMenu({ items, children, onOpenChange }: { items: MessageMenuItem[]; children: ReactNode; onOpenChange?: (open: boolean) => void }) {
+export default function MessageContextMenu({ items, children, onOpenChange, onCopyFailed }: { items: MessageMenuItem[]; children: ReactNode; onOpenChange?: (open: boolean) => void; onCopyFailed?: () => void }) {
+  const [link, setLink] = useState<LinkTarget | null>(null)
   if (!items.length || isTouchDevice()) return <>{children}</>
+  // Functional and identity-preserving, so a pointerdown that does not change
+  // the link under it does not re-render the bubble.
+  const track = (event: SyntheticEvent<HTMLElement>) => {
+    const next = linkAt(event)
+    setLink(prev => (prev?.href === next?.href && prev?.text === next?.text ? prev : next))
+  }
+  const copy = (text: string) => {
+    copyToClipboard(text).then(ok => { if (!ok) onCopyFailed?.() }, () => onCopyFailed?.())
+  }
+  const linkItems: MessageMenuItem[] = link ? [
+    { id: 'copy-link-address', label: i18nT('pages.chat.messageContextMenu.copy_link_address'), icon: <Link size={14} />, onSelect: () => copy(link.href) },
+    ...(link.text ? [{ id: 'copy-link-text', label: i18nT('pages.chat.messageContextMenu.copy_link_text'), icon: <Type size={14} />, onSelect: () => copy(link.text) }] : []),
+  ] : []
+  const all = linkItems.length
+    ? [...linkItems, { ...items[0], separatorBefore: true }, ...items.slice(1)]
+    : items
   return (
     <ContextMenu onOpenChange={onOpenChange}>
-      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild onContextMenu={track} onPointerDown={track}>{children}</ContextMenuTrigger>
       <ContextMenuContent className="min-w-[220px]" data-testid="message-context-menu">
-        {items.map(item => (
+        {all.map(item => (
           <Fragment key={item.id}>
             {item.separatorBefore && <ContextMenuSeparator />}
             <ContextMenuItem onSelect={item.onSelect} data-testid={`message-context-${item.id}`}>

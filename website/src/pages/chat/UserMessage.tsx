@@ -493,7 +493,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // The right-click menu wraps the bubble only when Quote is offered (the
   // menu's reason to exist) on a pointer device; otherwise `MessageContextMenu`
   // renders the bubble bare.
-  const bubbleWithMenu = <MessageContextMenu items={menuItems} onOpenChange={readStandIn}>{bubble}</MessageContextMenu>
+  const bubbleWithMenu = <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble}</MessageContextMenu>
 
   return (
     // Every box between the content column and the bubble is a fit-content flex

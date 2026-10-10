@@ -11583,6 +11583,10 @@
         "retry": "Erneut versuchen",
         "running_on_header": "Auf {{name}}",
         "approval_elsewhere": "Der Agent auf {{name}} wartet auf eine Genehmigung, die dieses Fenster nicht beantworten kann. Beantworte sie im Dashboard der Crew."
+      },
+      "messageContextMenu": {
+        "copy_link_text": "Linktext kopieren",
+        "copy_link_address": "Linkadresse kopieren"
       }
     },
     "chatPage": {

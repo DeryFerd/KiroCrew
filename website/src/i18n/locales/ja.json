@@ -11418,6 +11418,10 @@
         "retry": "再試行",
         "running_on_header": "{{name}} 上",
         "approval_elsewhere": "{{name}} のエージェントは、このウィンドウでは応答できない承認を待っています。クルー自身のダッシュボードで応答してください。"
+      },
+      "messageContextMenu": {
+        "copy_link_text": "リンクのテキストをコピー",
+        "copy_link_address": "リンクのアドレスをコピー"
       }
     },
     "chatPage": {

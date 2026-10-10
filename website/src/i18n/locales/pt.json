@@ -11748,6 +11748,10 @@
         "retry": "Tentar novamente",
         "running_on_header": "Em {{name}}",
         "approval_elsewhere": "O agente em {{name}} aguarda uma aprovação que esta janela não pode responder. Responda no painel da própria equipe."
+      },
+      "messageContextMenu": {
+        "copy_link_text": "Copiar texto do link",
+        "copy_link_address": "Copiar endereço do link"
       }
     },
     "chatPage": {

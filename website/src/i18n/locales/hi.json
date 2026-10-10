@@ -11583,6 +11583,10 @@
         "retry": "फिर से कोशिश करो",
         "running_on_header": "{{name}} पर",
         "approval_elsewhere": "{{name}} पर एजेंट एक ऐसी स्वीकृति की प्रतीक्षा कर रहा है जिसका जवाब यह विंडो नहीं दे सकती। क्रू के अपने डैशबोर्ड पर जवाब दो।"
+      },
+      "messageContextMenu": {
+        "copy_link_text": "लिंक टेक्स्ट कॉपी करो",
+        "copy_link_address": "लिंक पता कॉपी करो"
       }
     },
     "chatPage": {

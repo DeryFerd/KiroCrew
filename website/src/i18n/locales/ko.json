@@ -11418,6 +11418,10 @@
         "retry": "다시 시도",
         "running_on_header": "{{name}}에서",
         "approval_elsewhere": "{{name}}의 에이전트가 이 창에서는 응답할 수 없는 승인을 기다리고 있습니다. 크루의 자체 대시보드에서 응답하세요."
+      },
+      "messageContextMenu": {
+        "copy_link_text": "링크 텍스트 복사",
+        "copy_link_address": "링크 주소 복사"
       }
     },
     "chatPage": {

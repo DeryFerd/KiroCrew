@@ -11748,6 +11748,10 @@
         "retry": "Riprova",
         "running_on_header": "Su {{name}}",
         "approval_elsewhere": "L’agente su {{name}} attende un’approvazione a cui questa finestra non può rispondere. Rispondi nella dashboard dell’equipaggio."
+      },
+      "messageContextMenu": {
+        "copy_link_text": "Copia testo del link",
+        "copy_link_address": "Copia indirizzo del link"
       }
     },
     "chatPage": {

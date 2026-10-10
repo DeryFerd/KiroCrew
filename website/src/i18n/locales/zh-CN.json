@@ -11418,6 +11418,10 @@
         "retry": "重试",
         "running_on_header": "在 {{name}} 上",
         "approval_elsewhere": "{{name}} 上的代理正在等待一项此窗口无法回应的批准。请在该团队自己的控制台中回应。"
+      },
+      "messageContextMenu": {
+        "copy_link_text": "复制链接文本",
+        "copy_link_address": "复制链接地址"
       }
     },
     "chatPage": {

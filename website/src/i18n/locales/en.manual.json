@@ -4587,6 +4587,10 @@
         "copy_failed": "Copy failed",
         "quote_message": "Quote message"
       },
+      "messageContextMenu": {
+        "copy_link_text": "Copy link text",
+        "copy_link_address": "Copy link address"
+      },
       "chatNavPanel": {
         "link": "Link"
       },

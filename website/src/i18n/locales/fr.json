@@ -11748,6 +11748,10 @@
         "retry": "Réessayer",
         "running_on_header": "Sur {{name}}",
         "approval_elsewhere": "L’agent sur {{name}} attend une approbation à laquelle cette fenêtre ne peut pas répondre. Réponds-y sur le tableau de bord de l’équipage."
+      },
+      "messageContextMenu": {
+        "copy_link_text": "Copier le texte du lien",
+        "copy_link_address": "Copier l'adresse du lien"
       }
     },
     "chatPage": {

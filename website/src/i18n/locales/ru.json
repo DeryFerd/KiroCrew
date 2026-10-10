@@ -11913,6 +11913,10 @@
         "retry": "Повторить",
         "running_on_header": "На {{name}}",
         "approval_elsewhere": "Агент на {{name}} ждёт одобрения, на которое это окно ответить не может. Ответь на панели самой команды."
+      },
+      "messageContextMenu": {
+        "copy_link_text": "Копировать текст ссылки",
+        "copy_link_address": "Копировать адрес ссылки"
       }
     },
     "chatPage": {

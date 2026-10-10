@@ -80,12 +80,12 @@ def _reset_refusal_warning():
 
 
 @pytest.fixture(autouse=True)
-def _empty_catalog_cache(monkeypatch: pytest.MonkeyPatch):
+def _empty_catalog_cache(_floor_monkeypatch: pytest.MonkeyPatch):
     # ``api_models`` serves a warm module-level catalog before it would reach the
     # unresolved-binary 503 this file asserts. Another test in the same worker
     # can leave that cache warm, which turned the 503 into a 200 on the release
     # runner. A fresh cache per test makes the outcome independent of order.
-    monkeypatch.setattr(agents, "_catalog_cache", agents._CatalogCache())
+    _floor_monkeypatch.setattr(agents, "_catalog_cache", agents._CatalogCache())
 
 
 @pytest.mark.asyncio

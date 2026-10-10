@@ -268,6 +268,13 @@ class AcpError(Exception):
         # current attachment from an unsupported image retained in native
         # history. Set only from the raw provider data field.
         self.image_format_unsupported: bool = False
+        # Whether a TRANSIENT failure is the network path to the provider
+        # (dispatch failure, connection reset or refused, DNS, TLS, connect
+        # timeout) rather than a provider answer such as a 5xx or a throttle.
+        # Decided from the raw frame by :func:`_raise_acp_error`, because the
+        # formatter rewrites a dispatch failure into the generic 5xx prose.
+        # ``None`` means unclassified: readers fall back to the message text.
+        self.connection_failure: bool | None = None
 
 
 class AcpTimeoutError(AcpError):
@@ -631,6 +638,14 @@ _RE_CONNECTION = re.compile(
     r"|\bsocket hang ?up\b"
     r"|\bfetch failed\b"
     r"|\bconnection (?:refused|reset|closed|error|timed ?out)\b",
+    re.IGNORECASE,
+)
+# Connector-level failures that never produced a provider answer. Separate from
+# _RE_CONNECTION because a dispatch failure and a named connection reset sit in
+# the 5xx family for formatting, yet they say the network path dropped, not that
+# the provider answered with an error.
+_RE_CONNECTOR_FAILURE = re.compile(
+    rf"\b(?:dispatch{_5XX_SEP}failure|connection{_5XX_SEP}reset(?:{_5XX_SEP}error)?)\b",
     re.IGNORECASE,
 )
 # Genuine retry hint only. "response stream" is deliberately NOT matched here,
@@ -1275,8 +1290,9 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
 
     Precedence mirrors :func:`_is_transient_raw_error` exactly: usage-limit →
     malformed-request → model-unavailable → throttle → credential-propagation →
-    auth → session-expiry → connection → 5xx (named / status / retry hint) →
-    unknown. ``unknown`` is terminal. This is the public face of the private
+    auth → session-expiry → connection (including a connector dispatch
+    failure, which the formatter words as a 5xx) → 5xx (named / status / retry
+    hint) → unknown. ``unknown`` is terminal. This is the public face of the private
     ``_RE_*`` patterns: the dependency coordinator's ACP adapter and any other
     reader classify through it so a third copy of the vocabulary cannot drift.
     """
@@ -1300,7 +1316,7 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
         return ProviderErrorClass(PROVIDER_ERROR_AUTH, False, match.group(0))
     if _is_session_expired(text):
         return ProviderErrorClass(PROVIDER_ERROR_SESSION_EXPIRED, False, "session expired")
-    match = _RE_CONNECTION.search(text)
+    match = _RE_CONNECTION.search(text) or _RE_CONNECTOR_FAILURE.search(text)
     if match:
         return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, match.group(0))
     match = (
@@ -1760,6 +1776,12 @@ def _raise_acp_error(
     if _PROMPT_BUSY_RE.search(raw_data):
         raise AcpPromptBusy(formatted)
     err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
+    # Tag a network-path drop so the interactive retry ladder can wait out a
+    # short outage instead of spending the fixed provider-error budget. Only a
+    # transient verdict qualifies, so a terminal frame never becomes waitable.
+    err.connection_failure = (
+        bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_CONNECTION
+    )
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
     # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Four

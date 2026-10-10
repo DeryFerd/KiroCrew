@@ -80,7 +80,6 @@ from kiro_crew.dashboard.chat_fork import (
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_persistence import (
     _recent_session_slot_name,
-    _remember_reasoning_effort_for_restore,
     save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_utils import (
@@ -5337,7 +5336,8 @@ async def set_model_target(
     A reasoning effort must be one of the five canonical levels (``low``,
     ``medium``, ``high``, ``xhigh``, ``max``), which every backend accepts;
     any other level, including ``""``, is refused here and is set from the
-    effort dropdown instead. It is committed with the model in the same step. It is NOT pushed live the way that route pushes it: the
+    effort dropdown instead. It is committed with the model in the same step.
+    It is NOT pushed live the way that route pushes it: the
     turn-start reset makes the cold start apply it through the same
     ``reasoning_effort_override`` the route's reset fallback relies on, with no
     provider await after the gate.
@@ -5467,20 +5467,9 @@ async def set_model_target(
     ):
         if is_relay_archive(slot):
             raise SessionControlError(RELAY_ARCHIVE_ERROR, code=RELAY_ARCHIVE_CODE, status=409)
-        if reasoning_effort is not None:
-            # The restore allowlist marker the effort route writes before it
-            # commits a level: without it a reloaded transcript cannot bring the
-            # level back. Written here, off the loop and before the synchronous
-            # re-check below, because the turn-start commit must not do file IO.
-            try:
-                await asyncio.to_thread(_remember_reasoning_effort_for_restore, reasoning_effort)
-            except (OSError, ValueError) as exc:
-                logger.warning("session-control set_model: cannot retain effort: %s", exc)
-                raise SessionControlError(
-                    "reasoning effort persistence unavailable; nothing changed",
-                    code="effort_marker_unavailable",
-                    status=503,
-                ) from exc
+        # No restore-allowlist marker is written for the level: the five
+        # canonical levels are always restorable (`_REASONING_EFFORT_FALLBACK`),
+        # so the marker the effort dropdown writes for other levels is a no-op.
         session_key = effective_session_key(slot)
         if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
             raise _target_busy_error()
@@ -5646,6 +5635,45 @@ def _another_alias_is_mid_turn(state: "DashboardState", slot: "_ChatSlot") -> bo
     )
 
 
+def legacy_effort_base(model: str | None, *, pair_id_backend: bool) -> str:
+    """The base id a pin folds to when an effort level is committed, or ``""``.
+
+    On a backend that spells effort into the model id (codex:
+    ``gpt-6-astra[max]``), a pin still carrying a ``[level]`` suffix would keep
+    claiming the old level after a new one is committed, so the commit folds the
+    pin to its base id. Any other backend, or a pin with no suffix, folds nothing.
+
+    The effort dropdown route and :func:`apply_pending_model_pick` both commit a
+    level, and both ask this, so a change to the fold reaches both paths.
+    """
+    if not pair_id_backend:
+        return ""
+    base, level = model_registry.split_effort_suffix(model or "")
+    return base if level else ""
+
+
+def effort_commit_needs_reset(provider: object) -> bool:
+    """Whether committing a new effort level must reset the live session.
+
+    A live ACP session whose model takes no effort level keeps the level as a
+    stored value only: it applies once the user picks a capable model, and a
+    reset would restart the session for nothing. Any other live session, or no
+    live session, needs the reset (or the live push the dropdown tries first)
+    for the level to take.
+
+    Shared by the effort dropdown route and :func:`apply_pending_model_pick`
+    for the same reason as :func:`legacy_effort_base`.
+    """
+    # Duck-typed so this module stays above the agent-SDK boundary. Every
+    # LLMProvider has ``supports_effort``, and the base one returns a placeholder
+    # False, so only a provider that sets ``reports_effort_support`` (the ACP
+    # provider) can skip the reset. Read off the class, as isinstance would, so
+    # any other provider, an unspecced test double or no session keeps it.
+    if getattr(provider.__class__, "reports_effort_support", False) is not True:
+        return True
+    return provider.supports_effort() is not False  # type: ignore[attr-defined]
+
+
 def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool:
     """Commit *slot*'s pending ``session_set_model`` pick, if it is still allowed.
 
@@ -5777,16 +5805,16 @@ def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool
         # Recorded as an explicit pick so the model-fallback restore never undoes it.
         slot._model_pick_gen += 1
     if effort is not None:
-        if pick.pair_id_backend:
-            # The dropdown route's legacy fold: a pin still spelled
-            # ``<model>[<level>]`` would keep claiming the old level.
-            base, legacy_level = model_registry.split_effort_suffix(slot.model or "")
-            if legacy_level:
-                slot.model = base
-                changed = True
-        if (slot.reasoning_effort or "") != effort:
+        base = legacy_effort_base(slot.model, pair_id_backend=pick.pair_id_backend)
+        if base:
+            slot.model = base
+            changed = True
+        if (slot.reasoning_effort or "") != effort and effort_commit_needs_reset(
+            state.sessions.get_provider(effective_session_key(slot))
+        ):
             # A live session keeps the level it started with; the reset the
-            # caller arms on True makes the cold start read this one.
+            # caller arms on True makes the cold start read this one. A model
+            # that takes no level keeps it stored only, as the dropdown does.
             changed = True
         slot.reasoning_effort = effort
     _audit(

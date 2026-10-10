@@ -105,6 +105,11 @@ class LLMProvider(ABC):
     #: provider started anywhere else starts BACKGROUND.
     start_priority: StartPriority = StartPriority.BACKGROUND
 
+    #: True only on a provider whose ``supports_effort()`` reports the live
+    #: model. The base ``supports_effort()`` returns a placeholder False, so a
+    #: caller that acts on a False answer must check this first.
+    reports_effort_support: bool = False
+
     @cached_property
     def essential_delivery(self) -> EssentialDelivery:
         """Private prompt receipts belong to this provider, never the builder."""

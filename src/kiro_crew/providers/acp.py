@@ -446,6 +446,8 @@ def _is_transient_resume_lock_error(exc: BaseException) -> bool:
 class AcpProvider(LLMProvider):
     """LLMProvider backed by ACP JSON-RPC over stdio (kiro-cli or claude-agent-acp)."""
 
+    reports_effort_support = True
+
     def __init__(
         self,
         work_dir: str | Path | None = None,

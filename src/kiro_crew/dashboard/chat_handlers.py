@@ -7450,6 +7450,12 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     overlay). Effort is Opus/Sonnet-only; on a non-capable model this is a
     persisted no-op (no live apply, no session reset).
     """
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import (
+        effort_commit_needs_reset,
+        legacy_effort_base,
+    )
+
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -7529,16 +7535,17 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             )
         provider = state.sessions.get_provider(session_key)
         legacy_model = slot.model
-        split_base, legacy_level = model_registry.split_effort_suffix(legacy_model)
         legacy_base = ""
-        if legacy_level:
+        if model_registry.split_effort_suffix(legacy_model)[1]:
+            # The backend is only worth resolving when the pin carries a suffix.
             backend = (
                 provider.capabilities.backend
                 if isinstance(provider, AcpProvider)
                 else await _configured_backend_for_slot(slot)
             )
-            if backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
-                legacy_base = split_base
+            legacy_base = legacy_effort_base(
+                legacy_model, pair_id_backend=backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+            )
 
         def normalize_legacy_model() -> dict[str, str]:
             if not legacy_base or slot.model != legacy_model:
@@ -7593,8 +7600,8 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     type(exc).__name__,
                     exc,
                 )
-        elif isinstance(provider, AcpProvider):
-            # Model does not support effort — persist the slot value for when the
+        elif not effort_commit_needs_reset(provider):
+            # Model does not support effort: persist the slot value for when the
             # user switches to a capable model, but do not touch the live session.
             _updated_live = True
             logger.info("Slot %s effort persisted (model not effort-capable)", name)

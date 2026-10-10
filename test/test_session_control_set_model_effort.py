@@ -15,12 +15,15 @@ from unittest.mock import MagicMock
 import pytest
 from chat_test_helpers import _make_state
 
+from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_dashboard import TABLE
 from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
 from kiro_crew.mcp_tools.table import Caller, ToolContext
+from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.providers.base import LLMProvider
 
 _VERIFIED = "dashboard:chat-verified"
 
@@ -28,14 +31,6 @@ _VERIFIED = "dashboard:chat-verified"
 @pytest.fixture(autouse=True)
 def _enabled(_floor_monkeypatch):
     _floor_monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
-
-
-@pytest.fixture(autouse=True)
-def markers(_floor_monkeypatch):
-    """Record restore-allowlist marker writes instead of touching the config dir."""
-    written: list[str] = []
-    _floor_monkeypatch.setattr(sc, "_remember_reasoning_effort_for_restore", written.append)
-    return written
 
 
 def _key(slot) -> str:
@@ -53,7 +48,7 @@ def _pair(tmp_path):
     return state, state.get_or_create_slot("chat-1"), state.get_or_create_slot("chat-2")
 
 
-def test_an_effort_only_pick_keeps_the_model_and_commits_the_level(tmp_path, markers):
+def test_an_effort_only_pick_keeps_the_model_and_commits_the_level(tmp_path):
     state, caller, target = _pair(tmp_path)
     target.model = "pinned-model"
     target.jev_route = True
@@ -63,7 +58,6 @@ def test_an_effort_only_pick_keeps_the_model_and_commits_the_level(tmp_path, mar
 
     assert out == {"ok": True, "target": "chat-2", "reasoning_effort": "high", "pending": True}
     assert target.reasoning_effort == "", "nothing changes until the next turn starts"
-    assert markers == ["high"], "the restore allowlist marker is written at call time"
 
     assert sc.apply_pending_model_pick(state, target) is True, "a changed level needs a reset"
     assert target.reasoning_effort == "high"
@@ -96,7 +90,7 @@ def test_an_unchanged_level_needs_no_reset(tmp_path):
 
 
 @pytest.mark.parametrize("level", ["turbo", "HIGH", " high", "high\n", "", "minimal", "default"])
-def test_an_unknown_level_is_refused_before_anything_is_stored(tmp_path, level, markers):
+def test_an_unknown_level_is_refused_before_anything_is_stored(tmp_path, level):
     """Only the five standard levels pass. "" is refused because on kiro-cli the
     model default only takes once the workspace effort overlay is cleared, which
     only the dropdown route does. A level only one harness advertises (Pi's
@@ -109,7 +103,6 @@ def test_an_unknown_level_is_refused_before_anything_is_stored(tmp_path, level, 
 
     assert exc.value.code == "effort_rejected"
     assert target._pending_model_pick is None
-    assert markers == []
 
 
 def test_a_call_with_neither_setting_is_refused(tmp_path):
@@ -122,19 +115,69 @@ def test_a_call_with_neither_setting_is_refused(tmp_path):
     assert target._pending_model_pick is None
 
 
-def test_a_marker_failure_refuses_and_stores_nothing(tmp_path, monkeypatch):
+def test_a_level_on_a_model_that_takes_none_is_stored_without_a_reset(tmp_path):
+    """The dropdown keeps a level for a model that takes none as a stored value
+    and leaves the live session alone; the turn-start commit must agree, or an
+    agent's pick restarts the session for nothing."""
     state, caller, target = _pair(tmp_path)
+    _set(state, caller, "chat-2", reasoning_effort="high")
+    # Installed after the pick: a mock provider would read as a turn in flight.
+    live = MagicMock(spec=AcpProvider)
+    live.supports_effort.return_value = False
+    live.has_active_turn.return_value = False
+    state.sessions.get_provider = lambda _key: live
 
-    def _fail(_level):
-        raise OSError("read-only config dir")
+    assert sc.apply_pending_model_pick(state, target) is False
+    assert target.reasoning_effort == "high"
 
-    monkeypatch.setattr(sc, "_remember_reasoning_effort_for_restore", _fail)
 
-    with pytest.raises(sc.SessionControlError) as exc:
-        _set(state, caller, "chat-2", reasoning_effort="high")
+def test_a_level_on_a_capable_live_model_needs_a_reset(tmp_path):
+    state, caller, target = _pair(tmp_path)
+    _set(state, caller, "chat-2", reasoning_effort="high")
+    # Installed after the pick: a mock provider would read as a turn in flight.
+    live = MagicMock(spec=AcpProvider)
+    live.supports_effort.return_value = True
+    live.has_active_turn.return_value = False
+    state.sessions.get_provider = lambda _key: live
 
-    assert exc.value.code == "effort_marker_unavailable"
-    assert target._pending_model_pick is None
+    assert sc.apply_pending_model_pick(state, target) is True
+    assert target.reasoning_effort == "high"
+
+
+@pytest.mark.parametrize("spec", [LLMProvider, AcpSessionProvider])
+def test_a_provider_on_the_base_supports_effort_default_keeps_the_reset(spec):
+    """The base ``supports_effort`` returns a placeholder False. Read as an
+    answer, it would store the level on such a provider and never apply it."""
+    provider = MagicMock(spec=spec)
+    provider.supports_effort.return_value = False
+
+    assert sc.effort_commit_needs_reset(provider) is True
+
+
+def test_a_level_on_a_base_provider_session_still_resets(tmp_path):
+    state, caller, target = _pair(tmp_path)
+    _set(state, caller, "chat-2", reasoning_effort="high")
+    # Installed after the pick: a mock provider would read as a turn in flight.
+    live = MagicMock(spec=AcpSessionProvider)
+    live.supports_effort.return_value = False
+    live.has_active_turn.return_value = False
+    state.sessions.get_provider = lambda _key: live
+
+    assert sc.apply_pending_model_pick(state, target) is True
+    assert target.reasoning_effort == "high"
+
+
+@pytest.mark.parametrize(
+    ("model", "pair_id", "expected"),
+    [
+        ("gpt-6-astra[max]", True, "gpt-6-astra"),
+        ("gpt-6-astra", True, ""),
+        ("gpt-6-astra[max]", False, ""),
+        (None, True, ""),
+    ],
+)
+def test_legacy_effort_base(model, pair_id, expected):
+    assert sc.legacy_effort_base(model, pair_id_backend=pair_id) == expected
 
 
 def test_a_pair_id_backend_folds_the_legacy_suffix_off_the_pin(tmp_path, monkeypatch):
@@ -277,7 +320,7 @@ def test_a_model_only_pick_ignores_the_effort_switch_lock(tmp_path, monkeypatch)
     assert out["model"] == "claude-opus-5.5"
 
 
-def test_a_remote_crew_target_is_refused(tmp_path, markers):
+def test_a_remote_crew_target_is_refused(tmp_path):
     state, caller, target = _pair(tmp_path)
     target.executor = "remote"
 
@@ -285,7 +328,7 @@ def test_a_remote_crew_target_is_refused(tmp_path, markers):
         _set(state, caller, "chat-2", reasoning_effort="high")
 
     assert exc.value.code == "relay_archive_read_only"
-    assert markers == []
+    assert target._pending_model_pick is None
 
 
 def test_a_read_shows_the_level_and_the_pending_level(tmp_path):
